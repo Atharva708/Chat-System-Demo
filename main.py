@@ -96,6 +96,18 @@ def configure_tesseract():
 
 configure_tesseract()
 
+# Verify Tesseract is available and working
+try:
+    tesseract_version = pytesseract.get_tesseract_version()
+    print(f"✓ Tesseract OCR version {tesseract_version} detected and working")
+except Exception as e:
+    print(f"⚠ WARNING: Tesseract OCR not found or not accessible: {e}")
+    print("  Please install Tesseract:")
+    print("    • macOS: brew install tesseract")
+    print("    • Ubuntu/Debian: sudo apt-get install tesseract-ocr")
+    print("    • Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki")
+    print("    • Or set TESSERACT_CMD environment variable to point to tesseract executable")
+
 # Google Sheets Configuration
 # On Render, use environment variables. Locally, try credentials.json first
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
@@ -246,7 +258,8 @@ ALL_FIELDS = [
 
 def ocr_image_pil(image: Image.Image) -> str:
     """
-    OCR for a single PIL Image using Tesseract, with preprocessing for better results.
+    OCR for a single PIL Image using Tesseract, with robust preprocessing.
+    Based on the provided OCR service code for better accuracy.
     """
     try:
         # Convert to grayscale
@@ -257,29 +270,48 @@ def ocr_image_pil(image: Image.Image) -> str:
         max_side = max(w, h)
         if max_side < 1000:
             scale = 1000 / max_side
-            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            image = image.resize((new_w, new_h), Image.LANCZOS)
+            print(f"  Resized image from {w}x{h} to {new_w}x{new_h} for better OCR")
         
         # Enhance image for better OCR
         image = ImageOps.autocontrast(image)
         image = image.filter(ImageFilter.SHARPEN)
         
-        # Perform OCR
-        text = pytesseract.image_to_string(image)
-        return text.strip()
+        # Perform OCR with multiple attempts if needed
+        try:
+            text = pytesseract.image_to_string(image, lang='eng')
+            if text and text.strip():
+                return text.strip()
+        except Exception as e:
+            print(f"  OCR with preprocessing failed: {e}, trying without preprocessing...")
+        
+        # Fallback: try original image
+        try:
+            original = image.convert("L")
+            text = pytesseract.image_to_string(original, lang='eng')
+            if text and text.strip():
+                return text.strip()
+        except Exception as e2:
+            print(f"  OCR fallback failed: {e2}")
+        
+        return ""
     except Exception as e:
         print(f"Error in OCR preprocessing: {e}")
-        # Fallback: try OCR without preprocessing
+        import traceback
+        traceback.print_exc()
+        # Last resort: try direct OCR
         try:
-            text = pytesseract.image_to_string(image)
-            return text.strip()
-        except Exception as e2:
-            print(f"Error in OCR: {e2}")
+            text = pytesseract.image_to_string(image, lang='eng')
+            return text.strip() if text else ""
+        except:
             return ""
 
 async def extract_text_from_image(image_base64: str) -> Optional[str]:
     """
     Extracts text from base64-encoded image using local Tesseract OCR.
-    Returns None if OCR fails.
+    Robust implementation with multiple fallback strategies.
     """
     try:
         # Convert base64 to bytes
@@ -291,17 +323,78 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
         print(f"📷 Processing image with local OCR ({len(image_data)} bytes)...")
         
         # Convert bytes to PIL Image
-        image = Image.open(io.BytesIO(image_data))
-        
-        # Perform OCR
-        ocr_text = ocr_image_pil(image)
-        
-        if ocr_text:
-            print(f"✓ OCR successful, extracted {len(ocr_text)} characters")
-            return ocr_text
-        else:
-            print("⚠ OCR returned empty text")
+        try:
+            image = Image.open(io.BytesIO(image_data))
+            print(f"  Image format: {image.format}, size: {image.size}")
+        except Exception as e:
+            print(f"✗ Failed to open image: {e}")
             return None
+        
+        # Perform OCR with multiple strategies
+        ocr_text = None
+        
+        # Strategy 1: Full preprocessing
+        try:
+            ocr_text = ocr_image_pil(image)
+            if ocr_text and len(ocr_text.strip()) > 0:  # Accept any text
+                print(f"✓ OCR successful (strategy 1), extracted {len(ocr_text)} characters")
+                return ocr_text
+        except Exception as e:
+            print(f"  Strategy 1 failed: {e}")
+        
+        # Strategy 2: Direct OCR without preprocessing
+        try:
+            text = pytesseract.image_to_string(image, lang='eng')
+            if text and text.strip() and len(text.strip()) > 0:
+                print(f"✓ OCR successful (strategy 2), extracted {len(text.strip())} characters")
+                return text.strip()
+        except Exception as e:
+            print(f"  Strategy 2 failed: {e}")
+        
+        # Strategy 3: Try with different image modes
+        try:
+            for mode in ['RGB', 'L', '1']:
+                try:
+                    test_image = image.convert(mode)
+                    text = pytesseract.image_to_string(test_image, lang='eng')
+                    if text and text.strip() and len(text.strip()) > 0:
+                        print(f"✓ OCR successful (strategy 3, mode={mode}), extracted {len(text.strip())} characters")
+                        return text.strip()
+                except:
+                    continue
+        except Exception as e:
+            print(f"  Strategy 3 failed: {e}")
+        
+        # Strategy 4: Try different PSM modes
+        try:
+            psm_configs = ['--psm 6', '--psm 11', '--psm 12', '--psm 3', '--psm 4']
+            for config in psm_configs:
+                try:
+                    text = pytesseract.image_to_string(image, config=config, lang='eng')
+                    if text and text.strip() and len(text.strip()) > 0:
+                        print(f"✓ OCR successful (strategy 4, config={config}), extracted {len(text.strip())} characters")
+                        return text.strip()
+                except:
+                    continue
+        except Exception as e:
+            print(f"  Strategy 4 failed: {e}")
+        
+        # If we got any text at all, return it (even if very short)
+        if ocr_text and ocr_text.strip():
+            print(f"⚠ OCR returned text ({len(ocr_text)} chars), returning for processing")
+            return ocr_text.strip()
+        
+        # Last resort: try with minimal processing
+        try:
+            simple_text = pytesseract.image_to_string(image, lang='eng')
+            if simple_text and simple_text.strip():
+                print(f"⚠ OCR returned text with minimal processing ({len(simple_text.strip())} chars)")
+                return simple_text.strip()
+        except:
+            pass
+        
+        print("⚠ OCR returned empty text after all strategies")
+        return None
             
     except Exception as e:
         print(f"✗ Error in local OCR: {str(e)}")
@@ -809,7 +902,7 @@ async def get_homepage():
             <div class="border-t border-gray-200 p-4 bg-white">
                 <div class="flex items-end space-x-2">
                     <label class="cursor-pointer p-2 hover:bg-gray-100 rounded-lg transition">
-                        <input type="file" id="image-input" accept="image/*" class="hidden">
+                        <input type="file" id="image-input" accept="image/*,application/pdf,.doc,.docx" class="hidden">
                         <svg class="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path>
                         </svg>
@@ -912,16 +1005,24 @@ async def get_homepage():
                 this.style.height = (this.scrollHeight) + 'px';
             });
 
-            // Handle image selection
+            // Handle file/attachment selection - automatically triggers OCR
             imageInput.addEventListener('change', function(e) {
                 const file = e.target.files[0];
-                if (file && file.type.startsWith('image/')) {
-                    const reader = new FileReader();
-                    reader.onload = function(event) {
-                        const base64Image = event.target.result;
-                        sendImageMessage(base64Image, file.name);
-                    };
-                    reader.readAsDataURL(file);
+                if (file) {
+                    // Check if it's an image (OCR will be triggered automatically)
+                    if (file.type.startsWith('image/')) {
+                        console.log(`📎 Image file selected: ${file.name}, type: ${file.type}`);
+                        const reader = new FileReader();
+                        reader.onload = function(event) {
+                            const base64Image = event.target.result;
+                            // Send image - OCR will be triggered automatically on server
+                            sendImageMessage(base64Image, file.name);
+                        };
+                        reader.readAsDataURL(file);
+                    } else {
+                        // For non-image files, show a message
+                        alert('Currently only image files are supported for OCR. PDF and DOCX support coming soon.');
+                    }
                     // Reset input
                     e.target.value = '';
                 }
@@ -1056,6 +1157,8 @@ async def get_homepage():
                 return;
             }
             
+            // Send image - OCR will be automatically triggered on server side
+            console.log(`📎 Sending image: ${filename} - OCR will be triggered automatically`);
             const message = {
                 type: 'image',
                 image: base64Image,
@@ -1160,9 +1263,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 # For regular messages, send the text
                 text_to_send = text if message_data.get('type') == 'message' else None
                 
-                # Only process if there's actual content (not empty)
-                if text_to_send or image_base64:
+                # ALWAYS process if there's an image/attachment - trigger OCR automatically
+                # Also process if there's text
+                if image_base64 or text_to_send:
                     # Call API asynchronously (don't block message broadcast)
+                    # OCR will be triggered automatically for any image
                     asyncio.create_task(process_and_save_message(
                         text_to_send, 
                         image_base64, 
@@ -1185,17 +1290,19 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
         final_text = None
         ocr_status = "skipped"
         
-        # Step 1: If image is provided, use local OCR
+        # Step 1: ALWAYS trigger OCR for any image/attachment received
+        # OCR is automatically triggered whenever an image/attachment is detected
         if image_base64:
-            print("📷 Image detected, processing with local OCR...")
+            print("📷 Image/attachment detected - automatically triggering OCR...")
             ocr_text = await extract_text_from_image(image_base64)
-            if ocr_text and ocr_text.strip():
+            # Accept any non-empty text, even if very short
+            if ocr_text and ocr_text.strip() and len(ocr_text.strip()) > 0:
                 final_text = ocr_text.strip()
                 ocr_status = "success"
                 print(f"✓ OCR successful, extracted {len(final_text)} characters")
             else:
                 ocr_status = "failed"
-                print("✗ OCR failed or returned empty text")
+                print("✗ OCR failed or returned empty text - will retry with different settings")
         
         # Step 2: If we have text (from message or OCR), use it
         # If image OCR failed but we have original text, use that as fallback
@@ -1203,16 +1310,90 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
             final_text = text.strip()
             print(f"Using provided text ({len(final_text)} characters)")
         
-        # Step 3: Process text using local extractor
+        # Step 3: Retry OCR if it failed (with different strategies)
         if not final_text or not final_text.strip():
+            if image_base64:
+                print("🔄 Retrying OCR with alternative strategies...")
+                try:
+                    # Retry with different PSM modes
+                    if ',' in image_base64:
+                        header, image_base64_clean = image_base64.split(',', 1)
+                    else:
+                        image_base64_clean = image_base64
+                    
+                    image_data = base64.b64decode(image_base64_clean)
+                    image = Image.open(io.BytesIO(image_data))
+                    
+                    # Try different PSM (Page Segmentation Mode) configurations
+                    psm_configs = [
+                        ('', 'Default'),
+                        ('--psm 6', 'Uniform block'),
+                        ('--psm 11', 'Sparse text'),
+                        ('--psm 12', 'Sparse text OSD'),
+                        ('--psm 3', 'Fully automatic'),
+                        ('--psm 4', 'Single column'),
+                    ]
+                    
+                    for config, desc in psm_configs:
+                        try:
+                            text = pytesseract.image_to_string(image, config=config, lang='eng')
+                            if text and text.strip() and len(text.strip()) > 0:
+                                final_text = text.strip()
+                                ocr_status = "success"
+                                print(f"✓ OCR retry successful with {desc} (config: {config}), extracted {len(final_text)} characters")
+                                break
+                        except Exception as e:
+                            print(f"  Retry with {desc} failed: {e}")
+                            continue
+                    
+                    # If still no text, try with different image processing
+                    if not final_text or not final_text.strip():
+                        try:
+                            # Try with higher contrast
+                            img_gray = image.convert('L')
+                            img_enhanced = ImageOps.autocontrast(img_gray, cutoff=2)
+                            text = pytesseract.image_to_string(img_enhanced, lang='eng')
+                            if text and text.strip() and len(text.strip()) > 0:
+                                final_text = text.strip()
+                                ocr_status = "success"
+                                print(f"✓ OCR successful with enhanced contrast, extracted {len(final_text)} characters")
+                        except Exception as e:
+                            print(f"  Enhanced contrast retry failed: {e}")
+                            
+                except Exception as retry_error:
+                    print(f"✗ OCR retry failed: {retry_error}")
+                    import traceback
+                    traceback.print_exc()
+        
+        # Final check - if still no text, show helpful error
+        if not final_text or not final_text.strip():
+            # Check if Tesseract is available
+            try:
+                pytesseract.get_tesseract_version()
+                tesseract_available = True
+            except:
+                tesseract_available = False
+            
+            if not tesseract_available:
+                error_msg = "✗ Tesseract OCR not found. Please install Tesseract:\n"
+                error_msg += "  • macOS: brew install tesseract\n"
+                error_msg += "  • Ubuntu: sudo apt-get install tesseract-ocr\n"
+                error_msg += "  • Windows: Download from GitHub"
+            else:
+                error_msg = "✗ Could not extract text from image.\n"
+                error_msg += "Please ensure:\n"
+                error_msg += "  • Image is clear and readable\n"
+                error_msg += "  • Text is not too small or blurry\n"
+                error_msg += "  • Image contains visible text"
+            
             error_notification = {
                 "type": "notification",
-                "text": "✗ No text to process. OCR failed and no text provided.",
+                "text": error_msg,
                 "status": "error",
                 "timestamp": datetime.now().strftime('%H:%M')
             }
             await manager.broadcast(error_notification)
-            print("✗ No text available for processing")
+            print("✗ No text available for processing after all attempts")
             return
         
         print(f"🔍 Processing text with local extractor ({len(final_text)} characters)...")
