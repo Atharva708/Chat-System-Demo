@@ -2,9 +2,12 @@ fastapi
 uvicorn
 websockets
 python-multipart
-aiohttp
 pandas
 openpyxl
 gspread
 google-auth
+pytesseract
+pypdfium2
+Pillow
+python-docx
 

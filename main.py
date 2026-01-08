@@ -4,16 +4,21 @@ from typing import List, Dict, Optional
 import json
 import base64
 from datetime import datetime
-import aiohttp
 import asyncio
 import pandas as pd
 import os
+import io
+import platform
 from extractor import extract_attributes, ConversationData, asdict
 from openpyxl import Workbook, load_workbook
 from io import BytesIO
 import gspread
 from google.oauth2.service_account import Credentials
 import uuid
+import pytesseract
+import pypdfium2 as pdfium
+from PIL import Image, ImageOps, ImageFilter
+from docx import Document
 
 app = FastAPI()
 
@@ -66,8 +71,30 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# API Configuration
-OCR_API_URL = "https://ocr-deploy-lbdg.onrender.com"  # OCR API for images
+# OCR Configuration - Local Tesseract
+def configure_tesseract():
+    """
+    Configure Tesseract OCR path.
+    1) If env var TESSERACT_CMD is set, use it
+    2) Else on Windows, fallback to default install path
+    3) Else rely on PATH (Linux/macOS/Docker)
+    """
+    env_cmd = os.getenv("TESSERACT_CMD")
+    if env_cmd and os.path.exists(env_cmd):
+        pytesseract.pytesseract.tesseract_cmd = env_cmd
+        print(f"✓ Using Tesseract from TESSERACT_CMD: {env_cmd}")
+        return
+
+    if platform.system().lower().startswith("win"):
+        win_default = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        if os.path.exists(win_default):
+            pytesseract.pytesseract.tesseract_cmd = win_default
+            print(f"✓ Using Tesseract from Windows default: {win_default}")
+            return
+    
+    print("✓ Using Tesseract from system PATH")
+
+configure_tesseract()
 
 # Google Sheets Configuration
 # On Render, use environment variables. Locally, try credentials.json first
@@ -217,9 +244,41 @@ ALL_FIELDS = [
     'change_request', 'raw_text', 'user_identifier', 'extracted_by', 'extraction_timestamp'
 ]
 
+def ocr_image_pil(image: Image.Image) -> str:
+    """
+    OCR for a single PIL Image using Tesseract, with preprocessing for better results.
+    """
+    try:
+        # Convert to grayscale
+        image = image.convert("L")
+        
+        # Resize if too small (improves OCR accuracy)
+        w, h = image.size
+        max_side = max(w, h)
+        if max_side < 1000:
+            scale = 1000 / max_side
+            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        
+        # Enhance image for better OCR
+        image = ImageOps.autocontrast(image)
+        image = image.filter(ImageFilter.SHARPEN)
+        
+        # Perform OCR
+        text = pytesseract.image_to_string(image)
+        return text.strip()
+    except Exception as e:
+        print(f"Error in OCR preprocessing: {e}")
+        # Fallback: try OCR without preprocessing
+        try:
+            text = pytesseract.image_to_string(image)
+            return text.strip()
+        except Exception as e2:
+            print(f"Error in OCR: {e2}")
+            return ""
+
 async def extract_text_from_image(image_base64: str) -> Optional[str]:
     """
-    Sends image to OCR API and returns extracted text.
+    Extracts text from base64-encoded image using local Tesseract OCR.
     Returns None if OCR fails.
     """
     try:
@@ -227,57 +286,27 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
         if ',' in image_base64:
             # Remove data URL prefix (e.g., "data:image/png;base64,")
             header, image_base64 = image_base64.split(',', 1)
-            # Try to detect image type from header
-            if 'image/jpeg' in header or 'image/jpg' in header:
-                content_type = 'image/jpeg'
-                filename = 'image.jpg'
-            elif 'image/png' in header:
-                content_type = 'image/png'
-                filename = 'image.png'
-            else:
-                content_type = 'image/png'  # Default
-                filename = 'image.png'
-        else:
-            content_type = 'image/png'
-            filename = 'image.png'
         
         image_data = base64.b64decode(image_base64)
-        print(f"📤 Sending image to OCR API ({len(image_data)} bytes, {content_type})...")
+        print(f"📷 Processing image with local OCR ({len(image_data)} bytes)...")
         
-        async with aiohttp.ClientSession() as session:
-            # Prepare form data
-            data = aiohttp.FormData()
-            data.add_field('file', 
-                         image_data,
-                         filename=filename,
-                         content_type=content_type)
+        # Convert bytes to PIL Image
+        image = Image.open(io.BytesIO(image_data))
+        
+        # Perform OCR
+        ocr_text = ocr_image_pil(image)
+        
+        if ocr_text:
+            print(f"✓ OCR successful, extracted {len(ocr_text)} characters")
+            return ocr_text
+        else:
+            print("⚠ OCR returned empty text")
+            return None
             
-            # Make OCR API call
-            async with session.post(OCR_API_URL, data=data, timeout=aiohttp.ClientTimeout(total=60)) as response:
-                if response.status == 200:
-                    content_type_header = response.headers.get('content-type', '').lower()
-                    if 'application/json' in content_type_header:
-                        result = await response.json()
-                        ocr_text = result.get('text') or result.get('extracted_text') or result.get('ocr_text') or ''
-                        if ocr_text:
-                            print(f"✓ OCR returned {len(ocr_text)} characters")
-                        else:
-                            print("⚠ OCR returned empty text")
-                        return ocr_text if ocr_text else None
-                    else:
-                        ocr_text = await response.text()
-                        if ocr_text:
-                            print(f"✓ OCR returned {len(ocr_text)} characters (plain text)")
-                        return ocr_text if ocr_text else None
-                else:
-                    error_text = await response.text()
-                    print(f"✗ OCR API Error: {response.status} - {error_text[:200]}")
-                    return None
-    except asyncio.TimeoutError:
-        print("✗ OCR API timeout (60s)")
-        return None
     except Exception as e:
-        print(f"✗ Error calling OCR API: {str(e)}")
+        print(f"✗ Error in local OCR: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
 
 async def process_text_locally(text: str) -> Dict:
@@ -753,7 +782,7 @@ async def get_homepage():
                 </div>
                 <div class="flex items-center space-x-2 text-sm">
                     <div class="flex items-center space-x-1">
-                        <span id="ocr-status-indicator" class="w-2 h-2 rounded-full bg-gray-400" title="OCR API"></span>
+                        <span id="ocr-status-indicator" class="w-2 h-2 rounded-full bg-green-400" title="Local OCR (Tesseract)"></span>
                         <span class="opacity-80">OCR</span>
                     </div>
                     <div class="flex items-center space-x-1">
@@ -898,27 +927,9 @@ async def get_homepage():
                 }
             });
 
-            // Check API status on page load
-            async function checkAPIStatus() {
-                try {
-                    // Check OCR API
-                    const ocrResponse = await fetch('https://ocr-deploy-lbdg.onrender.com', { 
-                        method: 'HEAD',
-                        mode: 'no-cors',
-                        cache: 'no-cache'
-                    });
-                    document.getElementById('ocr-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
-                } catch (e) {
-                    document.getElementById('ocr-status-indicator').className = 'w-2 h-2 rounded-full bg-red-400';
-                }
-                // Extractor is always local (green)
-                document.getElementById('extractor-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
-            }
-            
-            // Check API status on load
-            checkAPIStatus();
-            // Re-check every 30 seconds
-            setInterval(checkAPIStatus, 30000);
+            // Set status indicators (both are local now)
+            document.getElementById('ocr-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
+            document.getElementById('extractor-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
 
             // WebSocket event handlers
             ws.onopen = function() {
@@ -1167,16 +1178,16 @@ async def websocket_endpoint(websocket: WebSocket):
 async def process_and_save_message(text: str, image_base64: Optional[str], timestamp: str, user_identifier: str):
     """
     Processes a message using local extractor (and OCR if image) and saves the result.
-    Flow: Image → OCR API → Extract text → Local Extractor → Google Sheets/Excel
+    Flow: Image → Local OCR → Extract text → Local Extractor → Google Sheets/Excel
     Runs silently in background - only shows final success/error notification.
     """
     try:
         final_text = None
         ocr_status = "skipped"
         
-        # Step 1: If image is provided, call OCR API first
+        # Step 1: If image is provided, use local OCR
         if image_base64:
-            print("📷 Image detected, calling OCR API...")
+            print("📷 Image detected, processing with local OCR...")
             ocr_text = await extract_text_from_image(image_base64)
             if ocr_text and ocr_text.strip():
                 final_text = ocr_text.strip()
@@ -1226,7 +1237,7 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                 # Log success to console
                 print(f"✓ Successfully processed message")
                 if ocr_status == "success":
-                    print(f"  (Processed via: Image → OCR API → Local Extractor)")
+                    print(f"  (Processed via: Image → Local OCR → Local Extractor)")
                 else:
                     print(f"  (Processed via: Text → Local Extractor)")
                 
