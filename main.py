@@ -72,7 +72,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # OCR API Configuration
-OCR_API_URL = os.getenv("OCR_API_URL", "https://ocr-deploy-lbdg.onrender.com/run")
+OCR_API_URL = os.getenv("OCR_API_URL", "https://ocr-deploy-lbdg.onrender.com")
 print(f"✓ Using External OCR API: {OCR_API_URL}")
 
 # Google Sheets Configuration
