@@ -1,5 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from typing import List, Dict, Optional
 import json
 import base64
@@ -10,10 +10,15 @@ import pandas as pd
 import os
 from extractor import extract_attributes, ConversationData, asdict
 from openpyxl import Workbook, load_workbook
+from io import BytesIO
 import gspread
 from google.oauth2.service_account import Credentials
+import uuid
 
 app = FastAPI()
+
+# In-memory storage for Excel files (for download fallback)
+excel_files_storage: Dict[str, bytes] = {}
 
 # Store active WebSocket connections with user info
 class ConnectionManager:
@@ -434,48 +439,88 @@ def save_to_excel_local(extracted_data: Dict, timestamp: str) -> str:
             json.dump(extracted_data, f, indent=2)
         return filepath
 
-def save_extracted_data(extracted_data: Dict, timestamp: str) -> str:
+def create_excel_in_memory(extracted_data: Dict, timestamp: str) -> tuple:
     """
-    Saves extracted data to Google Sheets. On Render, this is the only option.
-    Returns a description of where data was saved.
+    Creates an Excel file in memory and returns (file_id, filename).
+    Used as fallback when Google Sheets fails.
     """
-    # Always try Google Sheets first (required on Render)
+    try:
+        # Ensure all fields are present
+        complete_data = {}
+        for field in ALL_FIELDS:
+            complete_data[field] = extracted_data.get(field, '')
+        
+        # Build row values
+        row_values = [complete_data.get(field, '') for field in ALL_FIELDS]
+        
+        # Create workbook in memory
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Extraction Data"
+        
+        # Add headers
+        ws.append(ALL_FIELDS)
+        # Add data row
+        ws.append(row_values)
+        
+        # Save to BytesIO
+        excel_buffer = BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+        excel_bytes = excel_buffer.getvalue()
+        
+        # Generate unique file ID
+        file_id = str(uuid.uuid4())
+        
+        # Store in memory
+        excel_files_storage[file_id] = excel_bytes
+        
+        # Generate filename
+        today = datetime.now().strftime("%Y-%m-%d")
+        filename = f"extracted_data_{today}_{timestamp.replace(':', '-').replace(' ', '_')}.xlsx"
+        
+        return file_id, filename
+    except Exception as e:
+        print(f"Error creating Excel in memory: {e}")
+        raise
+
+def save_extracted_data(extracted_data: Dict, timestamp: str) -> Dict:
+    """
+    Saves extracted data to Google Sheets. If that fails, creates downloadable Excel.
+    Returns a dict with status, message, and optional download_url.
+    """
+    # Always try Google Sheets first
     if google_sheets_client and GOOGLE_SHEET_ID:
         try:
             result = save_to_google_sheets(extracted_data, timestamp)
-            return result
+            return {
+                "status": "success",
+                "message": result,
+                "download_url": None
+            }
         except Exception as e:
             error_msg = f"Google Sheets save failed: {str(e)}"
             print(f"✗ {error_msg}")
             import traceback
             traceback.print_exc()
-            # On Render, we can't save locally, so raise the error
-            if os.getenv("RENDER"):
-                raise Exception(f"Cannot save data on Render. {error_msg}")
-            # Only fallback to local if not on Render
-            print("⚠ Falling back to local Excel save (not available on Render)")
+            # Fall through to Excel fallback
     
-    # Fallback to local Excel (only works locally, not on Render)
-    if not os.getenv("RENDER"):
-        try:
-            return save_to_excel_local(extracted_data, timestamp)
-        except Exception as e:
-            print(f"✗ Local save also failed: {e}")
-            raise Exception(f"Could not save data locally: {str(e)}")
-    else:
-        # On Render, we must use Google Sheets
-        error_details = []
-        if not google_sheets_client:
-            error_details.append("Google Sheets client not initialized")
-        if not GOOGLE_SHEET_ID:
-            error_details.append("GOOGLE_SHEET_ID environment variable not set")
-        if not GOOGLE_CREDENTIALS_JSON:
-            error_details.append("GOOGLE_SHEETS_CREDENTIALS_JSON environment variable not set")
+    # Fallback: Create downloadable Excel file
+    try:
+        print("📥 Creating downloadable Excel file as fallback...")
+        file_id, filename = create_excel_in_memory(extracted_data, timestamp)
+        download_url = f"/download-excel/{file_id}/{filename}"
         
-        error_msg = "Google Sheets is required on Render but not configured."
-        if error_details:
-            error_msg += f" Issues: {', '.join(error_details)}."
-        error_msg += " Please set GOOGLE_SHEET_ID and GOOGLE_SHEETS_CREDENTIALS_JSON environment variables in your Render dashboard. See RENDER_SETUP.md for instructions."
+        print(f"✓ Excel file created: {filename} (ID: {file_id[:8]}...)")
+        return {
+            "status": "excel_fallback",
+            "message": f"Data saved to Excel file: {filename}",
+            "download_url": download_url,
+            "filename": filename
+        }
+    except Exception as e:
+        error_msg = f"Failed to create Excel file: {str(e)}"
+        print(f"✗ {error_msg}")
         raise Exception(error_msg)
 
 @app.get("/test")
@@ -527,6 +572,29 @@ async def test_sheets():
             "message": "Error connecting to Google Sheets",
             "details": str(e)
         }
+
+@app.get("/download-excel/{file_id}/{filename}")
+async def download_excel(file_id: str, filename: str):
+    """Download Excel file by file_id"""
+    if file_id not in excel_files_storage:
+        return {"error": "File not found or expired"}
+    
+    excel_bytes = excel_files_storage[file_id]
+    
+    # Clean up old files (keep only last 100)
+    if len(excel_files_storage) > 100:
+        # Remove oldest entries (simple cleanup)
+        keys_to_remove = list(excel_files_storage.keys())[:-100]
+        for key in keys_to_remove:
+            del excel_files_storage[key]
+    
+    return StreamingResponse(
+        BytesIO(excel_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
 
 @app.get("/", response_class=HTMLResponse)
 async def get_homepage():
@@ -949,7 +1017,7 @@ async def get_homepage():
             
             const notificationContent = document.createElement('div');
             
-            // Determine color based on status (only success/error now)
+            // Determine color based on status
             const status = data.status || 'success';
             let bgColor, borderColor, textColor;
             
@@ -957,14 +1025,35 @@ async def get_homepage():
                 bgColor = 'bg-green-100';
                 borderColor = 'border-green-400';
                 textColor = 'text-green-700';
+            } else if (status === 'excel_fallback') {
+                bgColor = 'bg-blue-100';
+                borderColor = 'border-blue-400';
+                textColor = 'text-blue-700';
             } else {
                 bgColor = 'bg-red-100';
                 borderColor = 'border-red-400';
                 textColor = 'text-red-700';
             }
             
-            notificationContent.className = `${bgColor} border ${borderColor} ${textColor} px-4 py-2 rounded-lg text-sm`;
-            notificationContent.textContent = data.text || 'Completed';
+            notificationContent.className = `${bgColor} border ${borderColor} ${textColor} px-4 py-2 rounded-lg text-sm flex items-center gap-2`;
+            
+            // Add text
+            const textSpan = document.createElement('span');
+            textSpan.textContent = data.text || 'Completed';
+            notificationContent.appendChild(textSpan);
+            
+            // Add download button if Excel fallback
+            if (status === 'excel_fallback' && data.download_url) {
+                const downloadBtn = document.createElement('a');
+                downloadBtn.href = data.download_url;
+                downloadBtn.download = data.filename || 'extracted_data.xlsx';
+                downloadBtn.className = 'ml-2 px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-xs font-semibold cursor-pointer';
+                downloadBtn.textContent = '📥 Download Excel';
+                downloadBtn.onclick = function(e) {
+                    e.stopPropagation();
+                };
+                notificationContent.appendChild(downloadBtn);
+            }
             
             notificationDiv.appendChild(notificationContent);
             messagesContainer.appendChild(notificationDiv);
@@ -1103,39 +1192,65 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
             # Create a filesystem-safe timestamp
             safe_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
-            # Save to Google Sheets or local Excel
+            # Save to Google Sheets or create downloadable Excel
             try:
-                save_location = save_extracted_data(extracted_data, safe_timestamp)
+                save_result = save_extracted_data(extracted_data, safe_timestamp)
                 
                 # Log success to console
-                print(f"✓ Successfully processed message and saved to: {save_location}")
+                print(f"✓ Successfully processed message")
                 if ocr_status == "success":
                     print(f"  (Processed via: Image → OCR API → Local Extractor)")
                 else:
                     print(f"  (Processed via: Text → Local Extractor)")
                 
-                # Only show final success notification
-                success_msg = f"✓ Data extracted and saved to Google Sheets: {save_location}"
-                if ocr_status == "success":
-                    success_msg += " (from image)"
+                # Handle different save results
+                if save_result.get("status") == "success":
+                    # Saved to Google Sheets
+                    success_msg = f"✓ Data extracted and saved to Google Sheets: {save_result.get('message', '')}"
+                    if ocr_status == "success":
+                        success_msg += " (from image)"
+                    
+                    notification = {
+                        "type": "notification",
+                        "text": success_msg,
+                        "status": "success",
+                        "timestamp": datetime.now().strftime('%H:%M'),
+                        "save_location": save_result.get('message')
+                    }
+                elif save_result.get("status") == "excel_fallback":
+                    # Created downloadable Excel
+                    download_url = save_result.get('download_url')
+                    filename = save_result.get('filename', 'extracted_data.xlsx')
+                    success_msg = f"✓ Data extracted and saved to Excel file: {filename}"
+                    if ocr_status == "success":
+                        success_msg += " (from image)"
+                    
+                    notification = {
+                        "type": "notification",
+                        "text": success_msg,
+                        "status": "excel_fallback",
+                        "timestamp": datetime.now().strftime('%H:%M'),
+                        "download_url": download_url,
+                        "filename": filename
+                    }
+                else:
+                    # Unknown status
+                    notification = {
+                        "type": "notification",
+                        "text": f"✓ Data extracted: {save_result.get('message', 'Saved')}",
+                        "status": "success",
+                        "timestamp": datetime.now().strftime('%H:%M')
+                    }
                 
-                notification = {
-                    "type": "notification",
-                    "text": success_msg,
-                    "status": "success",
-                    "timestamp": datetime.now().strftime('%H:%M'),
-                    "save_location": save_location
-                }
                 await manager.broadcast(notification)
             except Exception as save_error:
                 error_msg = str(save_error)
                 print(f"✗ Failed to save data: {error_msg}")
+                import traceback
+                traceback.print_exc()
                 
                 # Provide helpful error message
-                if "Google Sheets" in error_msg or "credentials" in error_msg.lower():
-                    user_error_msg = f"✗ Failed to save to Google Sheets. Check server logs. Error: {error_msg[:100]}"
-                else:
-                    user_error_msg = f"✗ Failed to save data: {error_msg[:100]}"
+                user_error_msg = f"✗ Failed to save data: {error_msg[:150]}"
                 
                 error_notification = {
                     "type": "notification",
@@ -1144,8 +1259,6 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                     "timestamp": datetime.now().strftime('%H:%M')
                 }
                 await manager.broadcast(error_notification)
-                # Re-raise to log full error
-                raise
         else:
             error_msg = result.get('message', 'Unknown error')
             print(f"✗ Extraction failed: {error_msg}")
