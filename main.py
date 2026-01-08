@@ -17,8 +17,9 @@ import uuid
 
 app = FastAPI()
 
-# In-memory storage for Excel files (for download fallback)
-excel_files_storage: Dict[str, bytes] = {}
+# In-memory storage for daily Excel files (for download fallback)
+# Key: date string (YYYY-MM-DD), Value: (Workbook object, file_bytes)
+daily_excel_files: Dict[str, tuple] = {}
 
 # Store active WebSocket connections with user info
 class ConnectionManager:
@@ -439,12 +440,15 @@ def save_to_excel_local(extracted_data: Dict, timestamp: str) -> str:
             json.dump(extracted_data, f, indent=2)
         return filepath
 
-def create_excel_in_memory(extracted_data: Dict, timestamp: str) -> tuple:
+def append_to_daily_excel(extracted_data: Dict, timestamp: str) -> str:
     """
-    Creates an Excel file in memory and returns (file_id, filename).
-    Used as fallback when Google Sheets fails.
+    Appends data to the daily Excel file in memory.
+    Creates the file if it doesn't exist, or appends to existing one.
+    Returns the date string (YYYY-MM-DD) used as the file key.
     """
     try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        
         # Ensure all fields are present
         complete_data = {}
         for field in ALL_FIELDS:
@@ -453,36 +457,59 @@ def create_excel_in_memory(extracted_data: Dict, timestamp: str) -> tuple:
         # Build row values
         row_values = [complete_data.get(field, '') for field in ALL_FIELDS]
         
-        # Create workbook in memory
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Extraction Data"
+        # Get or create daily workbook
+        if today not in daily_excel_files:
+            # Create new workbook for today
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Extraction Data"
+            # Add headers
+            ws.append(ALL_FIELDS)
+            daily_excel_files[today] = (wb, None)  # None means not yet serialized
+            print(f"📝 Created new daily Excel file for {today}")
         
-        # Add headers
-        ws.append(ALL_FIELDS)
-        # Add data row
+        # Get the workbook
+        wb, _ = daily_excel_files[today]
+        ws = wb.active
+        
+        # Append data row
         ws.append(row_values)
         
-        # Save to BytesIO
-        excel_buffer = BytesIO()
-        wb.save(excel_buffer)
-        excel_buffer.seek(0)
-        excel_bytes = excel_buffer.getvalue()
+        # Update stored workbook (invalidate cached bytes)
+        daily_excel_files[today] = (wb, None)
         
-        # Generate unique file ID
-        file_id = str(uuid.uuid4())
-        
-        # Store in memory
-        excel_files_storage[file_id] = excel_bytes
-        
-        # Generate filename
-        today = datetime.now().strftime("%Y-%m-%d")
-        filename = f"extracted_data_{today}_{timestamp.replace(':', '-').replace(' ', '_')}.xlsx"
-        
-        return file_id, filename
+        print(f"✓ Appended data to daily Excel file for {today} (total rows: {ws.max_row})")
+        return today
     except Exception as e:
-        print(f"Error creating Excel in memory: {e}")
+        print(f"Error appending to daily Excel: {e}")
+        import traceback
+        traceback.print_exc()
         raise
+
+def get_daily_excel_bytes(date_str: str) -> bytes:
+    """
+    Gets the serialized bytes of the daily Excel file.
+    Caches the result for performance.
+    """
+    if date_str not in daily_excel_files:
+        raise Exception(f"No Excel file found for date: {date_str}")
+    
+    wb, cached_bytes = daily_excel_files[date_str]
+    
+    # Return cached bytes if available
+    if cached_bytes is not None:
+        return cached_bytes
+    
+    # Serialize workbook to bytes
+    excel_buffer = BytesIO()
+    wb.save(excel_buffer)
+    excel_buffer.seek(0)
+    excel_bytes = excel_buffer.getvalue()
+    
+    # Cache the bytes
+    daily_excel_files[date_str] = (wb, excel_bytes)
+    
+    return excel_bytes
 
 def save_extracted_data(extracted_data: Dict, timestamp: str) -> Dict:
     """
@@ -505,21 +532,22 @@ def save_extracted_data(extracted_data: Dict, timestamp: str) -> Dict:
             traceback.print_exc()
             # Fall through to Excel fallback
     
-    # Fallback: Create downloadable Excel file
+    # Fallback: Append to daily Excel file
     try:
-        print("📥 Creating downloadable Excel file as fallback...")
-        file_id, filename = create_excel_in_memory(extracted_data, timestamp)
-        download_url = f"/download-excel/{file_id}/{filename}"
+        print("📥 Appending to daily Excel file as fallback...")
+        date_str = append_to_daily_excel(extracted_data, timestamp)
+        download_url = f"/download-daily-excel/{date_str}"
+        filename = f"extracted_data_{date_str}.xlsx"
         
-        print(f"✓ Excel file created: {filename} (ID: {file_id[:8]}...)")
         return {
             "status": "excel_fallback",
-            "message": f"Data saved to Excel file: {filename}",
+            "message": f"Data saved to daily Excel file. Download at end of day.",
             "download_url": download_url,
-            "filename": filename
+            "filename": filename,
+            "date": date_str
         }
     except Exception as e:
-        error_msg = f"Failed to create Excel file: {str(e)}"
+        error_msg = f"Failed to save to Excel file: {str(e)}"
         print(f"✗ {error_msg}")
         raise Exception(error_msg)
 
@@ -573,28 +601,40 @@ async def test_sheets():
             "details": str(e)
         }
 
-@app.get("/download-excel/{file_id}/{filename}")
-async def download_excel(file_id: str, filename: str):
-    """Download Excel file by file_id"""
-    if file_id not in excel_files_storage:
-        return {"error": "File not found or expired"}
-    
-    excel_bytes = excel_files_storage[file_id]
-    
-    # Clean up old files (keep only last 100)
-    if len(excel_files_storage) > 100:
-        # Remove oldest entries (simple cleanup)
-        keys_to_remove = list(excel_files_storage.keys())[:-100]
-        for key in keys_to_remove:
-            del excel_files_storage[key]
-    
-    return StreamingResponse(
-        BytesIO(excel_bytes),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        }
-    )
+@app.get("/download-daily-excel/{date_str}")
+async def download_daily_excel(date_str: str):
+    """Download the daily Excel file for a specific date (YYYY-MM-DD format)"""
+    try:
+        excel_bytes = get_daily_excel_bytes(date_str)
+        filename = f"extracted_data_{date_str}.xlsx"
+        
+        return StreamingResponse(
+            BytesIO(excel_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except Exception as e:
+        return {"error": f"File not found for date {date_str}: {str(e)}"}
+
+@app.get("/download-today-excel")
+async def download_today_excel():
+    """Download today's Excel file (convenience endpoint)"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        excel_bytes = get_daily_excel_bytes(today)
+        filename = f"extracted_data_{today}.xlsx"
+        
+        return StreamingResponse(
+            BytesIO(excel_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    except Exception as e:
+        return {"error": f"No data available for today ({today}): {str(e)}"}
 
 @app.get("/", response_class=HTMLResponse)
 async def get_homepage():
@@ -722,6 +762,12 @@ async def get_homepage():
                         <span id="extractor-status-indicator" class="w-2 h-2 rounded-full bg-green-400" title="Local Extractor"></span>
                         <span class="opacity-80">Extractor</span>
                     </div>
+                    <a href="/download-today-excel" 
+                       id="download-excel-btn"
+                       class="ml-4 px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-xs font-semibold opacity-80 hover:opacity-100 transition"
+                       title="Download today's Excel file with all extracted data">
+                        📥 Download Today's Excel
+                    </a>
                 </div>
             </div>
 
@@ -1218,10 +1264,11 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                         "save_location": save_result.get('message')
                     }
                 elif save_result.get("status") == "excel_fallback":
-                    # Created downloadable Excel
+                    # Appended to daily Excel file
                     download_url = save_result.get('download_url')
                     filename = save_result.get('filename', 'extracted_data.xlsx')
-                    success_msg = f"✓ Data extracted and saved to Excel file: {filename}"
+                    date_str = save_result.get('date', datetime.now().strftime("%Y-%m-%d"))
+                    success_msg = f"✓ Data saved to daily Excel file ({date_str}). Download at end of day."
                     if ocr_status == "success":
                         success_msg += " (from image)"
                     
@@ -1231,7 +1278,8 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                         "status": "excel_fallback",
                         "timestamp": datetime.now().strftime('%H:%M'),
                         "download_url": download_url,
-                        "filename": filename
+                        "filename": filename,
+                        "date": date_str
                     }
                 else:
                     # Unknown status
