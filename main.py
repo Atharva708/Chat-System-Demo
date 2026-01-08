@@ -15,7 +15,7 @@ from io import BytesIO
 import gspread
 from google.oauth2.service_account import Credentials
 import uuid
-import pytesseract
+import httpx
 import pypdfium2 as pdfium
 from PIL import Image, ImageOps, ImageFilter
 from docx import Document
@@ -71,42 +71,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# OCR Configuration - Local Tesseract
-def configure_tesseract():
-    """
-    Configure Tesseract OCR path.
-    1) If env var TESSERACT_CMD is set, use it
-    2) Else on Windows, fallback to default install path
-    3) Else rely on PATH (Linux/macOS/Docker)
-    """
-    env_cmd = os.getenv("TESSERACT_CMD")
-    if env_cmd and os.path.exists(env_cmd):
-        pytesseract.pytesseract.tesseract_cmd = env_cmd
-        print(f"✓ Using Tesseract from TESSERACT_CMD: {env_cmd}")
-        return
-
-    if platform.system().lower().startswith("win"):
-        win_default = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-        if os.path.exists(win_default):
-            pytesseract.pytesseract.tesseract_cmd = win_default
-            print(f"✓ Using Tesseract from Windows default: {win_default}")
-            return
-    
-    print("✓ Using Tesseract from system PATH")
-
-configure_tesseract()
-
-# Verify Tesseract is available and working
-try:
-    tesseract_version = pytesseract.get_tesseract_version()
-    print(f"✓ Tesseract OCR version {tesseract_version} detected and working")
-except Exception as e:
-    print(f"⚠ WARNING: Tesseract OCR not found or not accessible: {e}")
-    print("  Please install Tesseract:")
-    print("    • macOS: brew install tesseract")
-    print("    • Ubuntu/Debian: sudo apt-get install tesseract-ocr")
-    print("    • Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki")
-    print("    • Or set TESSERACT_CMD environment variable to point to tesseract executable")
+# OCR API Configuration
+OCR_API_URL = os.getenv("OCR_API_URL", "https://ocr-deploy-lbdg.onrender.com")
+print(f"✓ Using External OCR API: {OCR_API_URL}")
 
 # Google Sheets Configuration
 # On Render, use environment variables. Locally, try credentials.json first
@@ -256,148 +223,113 @@ ALL_FIELDS = [
     'change_request', 'raw_text', 'user_identifier', 'extracted_by', 'extraction_timestamp'
 ]
 
-def ocr_image_pil(image: Image.Image) -> str:
-    """
-    OCR for a single PIL Image using Tesseract, with robust preprocessing.
-    Based on the provided OCR service code for better accuracy.
-    """
-    try:
-        # Convert to grayscale
-        image = image.convert("L")
-        
-        # Resize if too small (improves OCR accuracy)
-        w, h = image.size
-        max_side = max(w, h)
-        if max_side < 1000:
-            scale = 1000 / max_side
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            image = image.resize((new_w, new_h), Image.LANCZOS)
-            print(f"  Resized image from {w}x{h} to {new_w}x{new_h} for better OCR")
-        
-        # Enhance image for better OCR
-        image = ImageOps.autocontrast(image)
-        image = image.filter(ImageFilter.SHARPEN)
-        
-        # Perform OCR with multiple attempts if needed
-        try:
-            text = pytesseract.image_to_string(image, lang='eng')
-            if text and text.strip():
-                return text.strip()
-        except Exception as e:
-            print(f"  OCR with preprocessing failed: {e}, trying without preprocessing...")
-        
-        # Fallback: try original image
-        try:
-            original = image.convert("L")
-            text = pytesseract.image_to_string(original, lang='eng')
-            if text and text.strip():
-                return text.strip()
-        except Exception as e2:
-            print(f"  OCR fallback failed: {e2}")
-        
-        return ""
-    except Exception as e:
-        print(f"Error in OCR preprocessing: {e}")
-        import traceback
-        traceback.print_exc()
-        # Last resort: try direct OCR
-        try:
-            text = pytesseract.image_to_string(image, lang='eng')
-            return text.strip() if text else ""
-        except:
-            return ""
-
 async def extract_text_from_image(image_base64: str) -> Optional[str]:
     """
-    Extracts text from base64-encoded image using local Tesseract OCR.
-    Robust implementation with multiple fallback strategies.
+    Extracts text from base64-encoded image using external OCR API.
     """
     try:
-        # Convert base64 to bytes
+        # Clean base64 string (remove data URL prefix if present)
         if ',' in image_base64:
-            # Remove data URL prefix (e.g., "data:image/png;base64,")
             header, image_base64 = image_base64.split(',', 1)
         
-        image_data = base64.b64decode(image_base64)
-        print(f"📷 Processing image with local OCR ({len(image_data)} bytes)...")
+        print(f"📷 Processing image with External OCR API ({len(image_base64)} base64 chars)...")
         
-        # Convert bytes to PIL Image
-        try:
-            image = Image.open(io.BytesIO(image_data))
-            print(f"  Image format: {image.format}, size: {image.size}")
-        except Exception as e:
-            print(f"✗ Failed to open image: {e}")
-            return None
+        # Prepare request payload
+        # Try different common API formats
+        payload_json = {
+            "image": image_base64
+        }
         
-        # Perform OCR with multiple strategies
-        ocr_text = None
+        # Alternative payload formats
+        payload_text = image_base64
+        payload_dict_alt = {
+            "image_base64": image_base64,
+            "base64_image": image_base64,
+            "data": image_base64
+        }
         
-        # Strategy 1: Full preprocessing
-        try:
-            ocr_text = ocr_image_pil(image)
-            if ocr_text and len(ocr_text.strip()) > 0:  # Accept any text
-                print(f"✓ OCR successful (strategy 1), extracted {len(ocr_text)} characters")
-                return ocr_text
-        except Exception as e:
-            print(f"  Strategy 1 failed: {e}")
-        
-        # Strategy 2: Direct OCR without preprocessing
-        try:
-            text = pytesseract.image_to_string(image, lang='eng')
-            if text and text.strip() and len(text.strip()) > 0:
-                print(f"✓ OCR successful (strategy 2), extracted {len(text.strip())} characters")
-                return text.strip()
-        except Exception as e:
-            print(f"  Strategy 2 failed: {e}")
-        
-        # Strategy 3: Try with different image modes
-        try:
-            for mode in ['RGB', 'L', '1']:
+        # Make async HTTP request to OCR API
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                # Try different endpoints and payload formats
+                endpoints_to_try = [
+                    (f"{OCR_API_URL}/ocr", payload_json, "application/json"),
+                    (OCR_API_URL, payload_json, "application/json"),
+                    (f"{OCR_API_URL}/extract", payload_json, "application/json"),
+                    (f"{OCR_API_URL}/ocr", payload_dict_alt, "application/json"),
+                ]
+                
+                response = None
+                last_error = None
+                
+                for endpoint, payload, content_type in endpoints_to_try:
+                    try:
+                        if content_type == "application/json":
+                            response = await client.post(
+                                endpoint,
+                                json=payload,
+                                headers={"Content-Type": "application/json"}
+                            )
+                        else:
+                            response = await client.post(
+                                endpoint,
+                                data=payload,
+                                headers={"Content-Type": content_type}
+                            )
+                        
+                        # If we get a successful response, break
+                        if response.status_code < 400:
+                            break
+                    except Exception as e:
+                        last_error = e
+                        continue
+                
+                if not response:
+                    raise Exception(f"All endpoint attempts failed. Last error: {last_error}")
+                
+                response.raise_for_status()
+                result = response.json()
+                
+                # Extract text from response (handle different response formats)
+                extracted_text = None
+                if isinstance(result, dict):
+                    # Try common response field names
+                    extracted_text = (
+                        result.get("text") or 
+                        result.get("extracted_text") or 
+                        result.get("result") or
+                        result.get("data")
+                    )
+                elif isinstance(result, str):
+                    extracted_text = result
+                
+                if extracted_text and extracted_text.strip():
+                    print(f"✓ OCR API successful, extracted {len(extracted_text.strip())} characters")
+                    return extracted_text.strip()
+                else:
+                    print("⚠ OCR API returned empty text")
+                    return None
+                    
+            except httpx.HTTPStatusError as e:
+                print(f"✗ OCR API HTTP error: {e.response.status_code} - {e.response.text}")
+                return None
+            except httpx.RequestError as e:
+                print(f"✗ OCR API request error: {e}")
+                return None
+            except json.JSONDecodeError as e:
+                print(f"✗ OCR API response is not valid JSON: {e}")
+                # Try to get text from response directly
                 try:
-                    test_image = image.convert(mode)
-                    text = pytesseract.image_to_string(test_image, lang='eng')
-                    if text and text.strip() and len(text.strip()) > 0:
-                        print(f"✓ OCR successful (strategy 3, mode={mode}), extracted {len(text.strip())} characters")
+                    text = response.text
+                    if text and text.strip():
+                        print(f"✓ OCR API returned text (non-JSON), extracted {len(text.strip())} characters")
                         return text.strip()
                 except:
-                    continue
-        except Exception as e:
-            print(f"  Strategy 3 failed: {e}")
-        
-        # Strategy 4: Try different PSM modes
-        try:
-            psm_configs = ['--psm 6', '--psm 11', '--psm 12', '--psm 3', '--psm 4']
-            for config in psm_configs:
-                try:
-                    text = pytesseract.image_to_string(image, config=config, lang='eng')
-                    if text and text.strip() and len(text.strip()) > 0:
-                        print(f"✓ OCR successful (strategy 4, config={config}), extracted {len(text.strip())} characters")
-                        return text.strip()
-                except:
-                    continue
-        except Exception as e:
-            print(f"  Strategy 4 failed: {e}")
-        
-        # If we got any text at all, return it (even if very short)
-        if ocr_text and ocr_text.strip():
-            print(f"⚠ OCR returned text ({len(ocr_text)} chars), returning for processing")
-            return ocr_text.strip()
-        
-        # Last resort: try with minimal processing
-        try:
-            simple_text = pytesseract.image_to_string(image, lang='eng')
-            if simple_text and simple_text.strip():
-                print(f"⚠ OCR returned text with minimal processing ({len(simple_text.strip())} chars)")
-                return simple_text.strip()
-        except:
-            pass
-        
-        print("⚠ OCR returned empty text after all strategies")
-        return None
-            
+                    pass
+                return None
+                
     except Exception as e:
-        print(f"✗ Error in local OCR: {str(e)}")
+        print(f"✗ Error calling OCR API: {str(e)}")
         import traceback
         traceback.print_exc()
         return None
@@ -875,7 +807,7 @@ async def get_homepage():
                 </div>
                 <div class="flex items-center space-x-2 text-sm">
                     <div class="flex items-center space-x-1">
-                        <span id="ocr-status-indicator" class="w-2 h-2 rounded-full bg-green-400" title="Local OCR (Tesseract)"></span>
+                        <span id="ocr-status-indicator" class="w-2 h-2 rounded-full bg-green-400" title="External OCR API"></span>
                         <span class="opacity-80">OCR</span>
                     </div>
                     <div class="flex items-center space-x-1">
@@ -1028,7 +960,7 @@ async def get_homepage():
                 }
             });
 
-            // Set status indicators (both are local now)
+            // Set status indicators
             document.getElementById('ocr-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
             document.getElementById('extractor-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
 
@@ -1310,81 +1242,13 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
             final_text = text.strip()
             print(f"Using provided text ({len(final_text)} characters)")
         
-        # Step 3: Retry OCR if it failed (with different strategies)
-        if not final_text or not final_text.strip():
-            if image_base64:
-                print("🔄 Retrying OCR with alternative strategies...")
-                try:
-                    # Retry with different PSM modes
-                    if ',' in image_base64:
-                        header, image_base64_clean = image_base64.split(',', 1)
-                    else:
-                        image_base64_clean = image_base64
-                    
-                    image_data = base64.b64decode(image_base64_clean)
-                    image = Image.open(io.BytesIO(image_data))
-                    
-                    # Try different PSM (Page Segmentation Mode) configurations
-                    psm_configs = [
-                        ('', 'Default'),
-                        ('--psm 6', 'Uniform block'),
-                        ('--psm 11', 'Sparse text'),
-                        ('--psm 12', 'Sparse text OSD'),
-                        ('--psm 3', 'Fully automatic'),
-                        ('--psm 4', 'Single column'),
-                    ]
-                    
-                    for config, desc in psm_configs:
-                        try:
-                            text = pytesseract.image_to_string(image, config=config, lang='eng')
-                            if text and text.strip() and len(text.strip()) > 0:
-                                final_text = text.strip()
-                                ocr_status = "success"
-                                print(f"✓ OCR retry successful with {desc} (config: {config}), extracted {len(final_text)} characters")
-                                break
-                        except Exception as e:
-                            print(f"  Retry with {desc} failed: {e}")
-                            continue
-                    
-                    # If still no text, try with different image processing
-                    if not final_text or not final_text.strip():
-                        try:
-                            # Try with higher contrast
-                            img_gray = image.convert('L')
-                            img_enhanced = ImageOps.autocontrast(img_gray, cutoff=2)
-                            text = pytesseract.image_to_string(img_enhanced, lang='eng')
-                            if text and text.strip() and len(text.strip()) > 0:
-                                final_text = text.strip()
-                                ocr_status = "success"
-                                print(f"✓ OCR successful with enhanced contrast, extracted {len(final_text)} characters")
-                        except Exception as e:
-                            print(f"  Enhanced contrast retry failed: {e}")
-                            
-                except Exception as retry_error:
-                    print(f"✗ OCR retry failed: {retry_error}")
-                    import traceback
-                    traceback.print_exc()
-        
         # Final check - if still no text, show helpful error
         if not final_text or not final_text.strip():
-            # Check if Tesseract is available
-            try:
-                pytesseract.get_tesseract_version()
-                tesseract_available = True
-            except:
-                tesseract_available = False
-            
-            if not tesseract_available:
-                error_msg = "✗ Tesseract OCR not found. Please install Tesseract:\n"
-                error_msg += "  • macOS: brew install tesseract\n"
-                error_msg += "  • Ubuntu: sudo apt-get install tesseract-ocr\n"
-                error_msg += "  • Windows: Download from GitHub"
-            else:
-                error_msg = "✗ Could not extract text from image.\n"
-                error_msg += "Please ensure:\n"
-                error_msg += "  • Image is clear and readable\n"
-                error_msg += "  • Text is not too small or blurry\n"
-                error_msg += "  • Image contains visible text"
+            error_msg = "✗ Could not extract text from image using OCR API.\n"
+            error_msg += "Please ensure:\n"
+            error_msg += "  • Image is clear and readable\n"
+            error_msg += "  • OCR API is accessible\n"
+            error_msg += "  • Image contains visible text"
             
             error_notification = {
                 "type": "notification",
@@ -1393,7 +1257,7 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                 "timestamp": datetime.now().strftime('%H:%M')
             }
             await manager.broadcast(error_notification)
-            print("✗ No text available for processing after all attempts")
+            print("✗ No text available for processing")
             return
         
         print(f"🔍 Processing text with local extractor ({len(final_text)} characters)...")
@@ -1418,7 +1282,7 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                 # Log success to console
                 print(f"✓ Successfully processed message")
                 if ocr_status == "success":
-                    print(f"  (Processed via: Image → Local OCR → Local Extractor)")
+                    print(f"  (Processed via: Image → External OCR API → Local Extractor)")
                 else:
                     print(f"  (Processed via: Text → Local Extractor)")
                 

@@ -6,7 +6,7 @@ pandas
 openpyxl
 gspread
 google-auth
-pytesseract
+httpx
 pypdfium2
 Pillow
 python-docx
