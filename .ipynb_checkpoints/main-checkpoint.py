@@ -10,26 +10,18 @@ import pandas as pd
 import os
 from extractor import extract_attributes, ConversationData, asdict
 from openpyxl import Workbook, load_workbook
-import gspread
-from google.oauth2.service_account import Credentials
 
 app = FastAPI()
 
-# Store active WebSocket connections with user info
+# Store active WebSocket connections
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[WebSocket, Dict] = {}  # websocket -> user_info
+        self.active_connections: List[WebSocket] = []
         self.messages: List[Dict] = []  # Store messages per session
     
-    async def connect(self, websocket: WebSocket, user_name: str = None, user_id: str = None):
+    async def connect(self, websocket: WebSocket):
         await websocket.accept()
-        # Generate user identifier
-        user_identifier = user_name or user_id or f"User_{id(websocket)}"
-        self.active_connections[websocket] = {
-            "name": user_name or user_identifier,
-            "id": user_id or user_identifier,
-            "identifier": user_identifier
-        }
+        self.active_connections.append(websocket)
         # Send chat history to new connection
         if self.messages:
             await websocket.send_json({
@@ -38,11 +30,7 @@ class ConnectionManager:
             })
     
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            del self.active_connections[websocket]
-    
-    def get_user_info(self, websocket: WebSocket) -> Dict:
-        return self.active_connections.get(websocket, {"name": "Anonymous", "id": "unknown", "identifier": "Anonymous"})
+        self.active_connections.remove(websocket)
     
     async def broadcast(self, message: dict):
         # Add message to history
@@ -52,7 +40,7 @@ class ConnectionManager:
             self.messages.pop(0)
         
         # Broadcast to all connected clients
-        for connection in list(self.active_connections.keys()):
+        for connection in self.active_connections:
             try:
                 await connection.send_json(message)
             except:
@@ -63,82 +51,12 @@ manager = ConnectionManager()
 # API Configuration
 OCR_API_URL = "https://ocr-deploy-lbdg.onrender.com"  # OCR API for images
 
-# Google Sheets Configuration
-# Try to load from credentials.json file first, then environment variables
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
-CREDENTIALS_FILE = "credentials.json"
-
-# Try to load credentials from file
-if os.path.exists(CREDENTIALS_FILE):
-    try:
-        with open(CREDENTIALS_FILE, 'r') as f:
-            creds_dict = json.load(f)
-            # If file contains sheet_id, use it
-            if 'sheet_id' in creds_dict:
-                GOOGLE_SHEET_ID = creds_dict['sheet_id']
-            print(f"✓ Loaded credentials from {CREDENTIALS_FILE}")
-    except Exception as e:
-        print(f"⚠ Error reading {CREDENTIALS_FILE}: {e}")
-
-# Fallback: Save Excel files locally if Google Sheets not configured
+# Save Excel files to Desktop
 DESKTOP_PATH = os.path.join(os.path.expanduser("~"), "Desktop")
 EXCEL_OUTPUT_DIR = os.path.join(DESKTOP_PATH, "Chat_Extracted_Data")
 
-# Create output directory if it doesn't exist (for local fallback)
-try:
-    os.makedirs(EXCEL_OUTPUT_DIR, exist_ok=True)
-except:
-    pass  # Ignore if can't create (e.g., on Render)
-
-# Initialize Google Sheets client if credentials are available
-google_sheets_client = None
-if os.path.exists(CREDENTIALS_FILE):
-    try:
-        with open(CREDENTIALS_FILE, 'r') as f:
-            creds_dict = json.load(f)
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        google_sheets_client = gspread.authorize(creds)
-        # Get sheet ID from file or environment
-        if not GOOGLE_SHEET_ID and 'sheet_id' in creds_dict:
-            GOOGLE_SHEET_ID = creds_dict['sheet_id']
-        print("✓ Google Sheets initialized successfully from credentials.json")
-    except Exception as e:
-        print(f"⚠ Google Sheets initialization from file failed: {e}")
-        # Try environment variable as fallback
-        if GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID:
-            try:
-                creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-                scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-                creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-                google_sheets_client = gspread.authorize(creds)
-                print("✓ Google Sheets initialized successfully from environment variables")
-            except Exception as e2:
-                print(f"⚠ Google Sheets initialization from env failed: {e2}")
-                google_sheets_client = None
-        else:
-            google_sheets_client = None
-elif GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID:
-    try:
-        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        google_sheets_client = gspread.authorize(creds)
-        print("✓ Google Sheets initialized successfully from environment variables")
-    except Exception as e:
-        print(f"⚠ Google Sheets initialization failed: {e}")
-        google_sheets_client = None
-else:
-    print("⚠ Google Sheets not configured - will use local file saving (may not work on Render)")
-
-# Define all possible fields from ConversationData (for consistent column headers)
-ALL_FIELDS = [
-    'timestamp', 'sentiment', 'member_id', 'first_name', 'last_name', 'dob',
-    'address', 'city', 'state', 'zip_code', 'address_status', 'member_status',
-    'start_date', 'end_date', 'health_plan', 'contract_type', 'codes',
-    'change_request', 'raw_text', 'user_identifier', 'extracted_by', 'extraction_timestamp'
-]
+# Create output directory if it doesn't exist
+os.makedirs(EXCEL_OUTPUT_DIR, exist_ok=True)
 
 async def extract_text_from_image(image_base64: str) -> Optional[str]:
     """
@@ -206,15 +124,14 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
 async def process_text_locally(text: str) -> Dict:
     """
     Processes text using local extractor and returns extracted data.
-    Returns ALL fields, including None values for consistent Google Sheets structure.
     """
     try:
         # Use local extractor
         extracted_data = extract_attributes(text)
-        # Convert to dictionary - keep ALL fields including None values
+        # Convert to dictionary
         result_dict = asdict(extracted_data)
-        # Convert None to empty string for Google Sheets compatibility
-        result_dict = {k: (v if v is not None else '') for k, v in result_dict.items()}
+        # Remove None values for cleaner output
+        result_dict = {k: v for k, v in result_dict.items() if v is not None}
         return {
             "status": "success",
             "extracted_data": result_dict
@@ -226,70 +143,10 @@ async def process_text_locally(text: str) -> Dict:
             "message": str(e)
         }
 
-def save_to_google_sheets(extracted_data: Dict, timestamp: str) -> str:
+def save_to_excel(extracted_data: Dict, timestamp: str) -> str:
     """
-    Saves extracted data to Google Sheets with ALL fields visible.
-    Uses consistent column headers for all rows.
-    Returns a success message with sheet name.
-    """
-    try:
-        if not google_sheets_client:
-            raise Exception("Google Sheets client not initialized")
-        
-        if not GOOGLE_SHEET_ID:
-            raise Exception("GOOGLE_SHEET_ID not configured")
-        
-        # Open the spreadsheet
-        sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
-        
-        # Get today's date for worksheet name
-        today = datetime.now().strftime("%Y-%m-%d")
-        worksheet_name = f"Extracted Data {today}"
-        
-        # Try to get existing worksheet or create new one
-        worksheet_exists = True
-        try:
-            worksheet = sheet.worksheet(worksheet_name)
-            # Check if headers exist
-            existing_headers = worksheet.row_values(1)
-            if not existing_headers or len(existing_headers) == 0:
-                worksheet_exists = False
-        except:
-            worksheet_exists = False
-        
-        if not worksheet_exists:
-            # Create new worksheet with enough columns
-            worksheet = sheet.add_worksheet(title=worksheet_name, rows=1000, cols=len(ALL_FIELDS))
-            # Add header row with ALL fields in consistent order
-            worksheet.append_row(ALL_FIELDS)
-            print(f"✓ Created new worksheet: {worksheet_name} with {len(ALL_FIELDS)} columns")
-        
-        # Ensure all fields are present in extracted_data (fill missing ones with empty string)
-        complete_data = {}
-        for field in ALL_FIELDS:
-            complete_data[field] = extracted_data.get(field, '')
-        
-        # Build row values in the same order as ALL_FIELDS
-        row_values = [complete_data.get(field, '') for field in ALL_FIELDS]
-        
-        # Append data row
-        worksheet.append_row(row_values)
-        
-        print(f"✓ Saved data to Google Sheet: {worksheet_name}")
-        print(f"  Fields saved: {len([v for v in row_values if v])} non-empty fields")
-        
-        return f"Google Sheet: {worksheet_name}"
-        
-    except Exception as e:
-        print(f"Error saving to Google Sheets: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise
-
-def save_to_excel_local(extracted_data: Dict, timestamp: str) -> str:
-    """
-    Saves extracted data to a local Excel file (fallback).
-    Uses consistent column structure matching Google Sheets format.
+    Saves extracted data to an Excel file.
+    Uses the same format as the original extractor (appends to daily file).
     Returns the file path.
     """
     try:
@@ -298,33 +155,21 @@ def save_to_excel_local(extracted_data: Dict, timestamp: str) -> str:
         filename = f"extracted_data_{today}.xlsx"
         filepath = os.path.join(EXCEL_OUTPUT_DIR, filename)
         
-        # Ensure all fields are present (fill missing ones with empty string)
-        complete_data = {}
-        for field in ALL_FIELDS:
-            complete_data[field] = extracted_data.get(field, '')
-        
-        # Build row values in the same order as ALL_FIELDS
-        row_values = [complete_data.get(field, '') for field in ALL_FIELDS]
+        # Get field names from ConversationData
+        field_names = list(extracted_data.keys())
+        row_values = [extracted_data.get(field, '') for field in field_names]
         
         # Create or append to Excel file
         if not os.path.exists(filepath):
             wb = Workbook()
             ws = wb.active
             ws.title = "Extraction Data"
-            ws.append(ALL_FIELDS)  # Header row with all fields
+            ws.append(field_names)  # Header row
             ws.append(row_values)    # Data row
             wb.save(filepath)
         else:
             wb = load_workbook(filepath)
             ws = wb.active
-            # Check if headers match
-            existing_headers = [cell.value for cell in ws[1]]
-            if existing_headers != ALL_FIELDS:
-                # Headers don't match, add header row if empty
-                if not existing_headers or len(existing_headers) == 0:
-                    ws.insert_rows(1)
-                    for col_idx, header in enumerate(ALL_FIELDS, start=1):
-                        ws.cell(row=1, column=col_idx, value=header)
             ws.append(row_values)  # Append data row
             wb.save(filepath)
         
@@ -338,25 +183,6 @@ def save_to_excel_local(extracted_data: Dict, timestamp: str) -> str:
         with open(filepath, 'w') as f:
             json.dump(extracted_data, f, indent=2)
         return filepath
-
-def save_extracted_data(extracted_data: Dict, timestamp: str) -> str:
-    """
-    Saves extracted data to Google Sheets if available, otherwise falls back to local Excel.
-    Returns a description of where data was saved.
-    """
-    # Try Google Sheets first
-    if google_sheets_client and GOOGLE_SHEET_ID:
-        try:
-            return save_to_google_sheets(extracted_data, timestamp)
-        except Exception as e:
-            print(f"Google Sheets save failed, trying local: {e}")
-    
-    # Fallback to local Excel
-    try:
-        return save_to_excel_local(extracted_data, timestamp)
-    except Exception as e:
-        print(f"Local save also failed: {e}")
-        return "Error: Could not save data"
 
 @app.get("/test")
 async def test():
@@ -532,163 +358,99 @@ async def get_homepage():
     </div>
 
     <script>
-        // User identification
-        let currentUserName = '';
-        let currentUserId = '';
-        let ws = null;
+        // Dynamically detect WebSocket protocol based on current page protocol
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+        
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('message-input');
         const sendButton = document.getElementById('send-button');
         const imageInput = document.getElementById('image-input');
         const messagesScrollContainer = document.getElementById('messages-container');
         let currentChat = 'Team Alpha';
-        
-        // Show user identification modal on page load
-        function showUserModal() {
-            const modal = document.createElement('div');
-            modal.id = 'user-modal';
-            modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
-            modal.innerHTML = `
-                <div class="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-                    <h2 class="text-xl font-semibold mb-4 text-gray-800">Enter Your Information</h2>
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Your Name *</label>
-                            <input type="text" id="user-name-input" placeholder="e.g., John Doe" 
-                                class="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 teams-purple-ring"
-                                onkeydown="if(event.key === 'Enter') connectWebSocket()">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Your ID (Optional)</label>
-                            <input type="text" id="user-id-input" placeholder="e.g., EMP001" 
-                                class="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 teams-purple-ring"
-                                onkeydown="if(event.key === 'Enter') connectWebSocket()">
-                        </div>
-                        <button onclick="connectWebSocket()" 
-                            class="w-full teams-purple text-white px-4 py-2 rounded-lg font-semibold hover:opacity-90"
-                            style="background-color: #4B53BC;">
-                            Join Chat
-                        </button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(modal);
-        }
-        
-        // Connect WebSocket after user identification
-        function connectWebSocket() {
-            currentUserName = document.getElementById('user-name-input').value.trim();
-            currentUserId = document.getElementById('user-id-input').value.trim();
-            
-            if (!currentUserName && !currentUserId) {
-                alert('Please enter at least your name or ID');
-                return;
+
+        // Auto-resize textarea
+        messageInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+        });
+
+        // Handle image selection
+        imageInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file && file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    const base64Image = event.target.result;
+                    sendImageMessage(base64Image, file.name);
+                };
+                reader.readAsDataURL(file);
+                // Reset input
+                e.target.value = '';
             }
-            
-            // Remove modal
-            const modal = document.getElementById('user-modal');
-            if (modal) modal.remove();
-            
-            // Dynamically detect WebSocket protocol based on current page protocol
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-            
-            // Setup WebSocket handlers
-            setupWebSocketHandlers();
+        });
+
+        // Check API status on page load
+        async function checkAPIStatus() {
+            try {
+                // Check OCR API
+                const ocrResponse = await fetch('https://ocr-deploy-lbdg.onrender.com', { 
+                    method: 'HEAD',
+                    mode: 'no-cors',
+                    cache: 'no-cache'
+                });
+                document.getElementById('ocr-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
+            } catch (e) {
+                document.getElementById('ocr-status-indicator').className = 'w-2 h-2 rounded-full bg-red-400';
+            }
+            // Extractor is always local (green)
+            document.getElementById('extractor-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
         }
         
-        // Setup WebSocket event handlers
-        function setupWebSocketHandlers() {
-            // Auto-resize textarea
-            messageInput.addEventListener('input', function() {
-                this.style.height = 'auto';
-                this.style.height = (this.scrollHeight) + 'px';
-            });
+        // Check API status on load
+        checkAPIStatus();
+        // Re-check every 30 seconds
+        setInterval(checkAPIStatus, 30000);
 
-            // Handle image selection
-            imageInput.addEventListener('change', function(e) {
-                const file = e.target.files[0];
-                if (file && file.type.startsWith('image/')) {
-                    const reader = new FileReader();
-                    reader.onload = function(event) {
-                        const base64Image = event.target.result;
-                        sendImageMessage(base64Image, file.name);
-                    };
-                    reader.readAsDataURL(file);
-                    // Reset input
-                    e.target.value = '';
-                }
-            });
+        // WebSocket event handlers
+        ws.onopen = function() {
+            console.log('WebSocket connected');
+            sendButton.disabled = false;
+        };
 
-            // Check API status on page load
-            async function checkAPIStatus() {
-                try {
-                    // Check OCR API
-                    const ocrResponse = await fetch('https://ocr-deploy-lbdg.onrender.com', { 
-                        method: 'HEAD',
-                        mode: 'no-cors',
-                        cache: 'no-cache'
-                    });
-                    document.getElementById('ocr-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
-                } catch (e) {
-                    document.getElementById('ocr-status-indicator').className = 'w-2 h-2 rounded-full bg-red-400';
-                }
-                // Extractor is always local (green)
-                document.getElementById('extractor-status-indicator').className = 'w-2 h-2 rounded-full bg-green-400';
-            }
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
             
-            // Check API status on load
-            checkAPIStatus();
-            // Re-check every 30 seconds
-            setInterval(checkAPIStatus, 30000);
+            if (data.type === 'history') {
+                // Load chat history
+                messagesContainer.innerHTML = '';
+                data.messages.forEach(msg => {
+                    addMessageToUI(msg);
+                });
+                scrollToBottom();
+            } else if (data.type === 'message' || data.type === 'image') {
+                addMessageToUI(data);
+                scrollToBottom();
+            } else if (data.type === 'notification') {
+                // Only show final notifications (not status updates)
+                addNotificationToUI(data);
+                scrollToBottom();
+            }
+        };
 
-            // WebSocket event handlers
-            ws.onopen = function() {
-                console.log('WebSocket connected');
-                sendButton.disabled = false;
-                // Send user identification
-                ws.send(JSON.stringify({
-                    type: 'user_identify',
-                    user_name: currentUserName,
-                    user_id: currentUserId
-                }));
-            };
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
 
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                
-                if (data.type === 'history') {
-                    // Load chat history
-                    messagesContainer.innerHTML = '';
-                    data.messages.forEach(msg => {
-                        addMessageToUI(msg);
-                    });
-                    scrollToBottom();
-                } else if (data.type === 'message' || data.type === 'image') {
-                    addMessageToUI(data);
-                    scrollToBottom();
-                } else if (data.type === 'notification') {
-                    // Only show final notifications (not status updates)
-                    addNotificationToUI(data);
-                    scrollToBottom();
-                }
-            };
-
-            ws.onerror = function(error) {
-                console.error('WebSocket error:', error);
-            };
-
-            ws.onclose = function() {
-                console.log('WebSocket disconnected');
-                sendButton.disabled = true;
-                // Attempt to reconnect after 3 seconds
-                setTimeout(() => {
-                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-                    setupWebSocketHandlers();
-                }, 3000);
-            };
-        }
+        ws.onclose = function() {
+            console.log('WebSocket disconnected');
+            sendButton.disabled = true;
+            // Attempt to reconnect after 3 seconds
+            setTimeout(() => {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            }, 3000);
+        };
 
         function addMessageToUI(data) {
             const messageDiv = document.createElement('div');
@@ -740,11 +502,6 @@ async def get_homepage():
         }
 
         function sendMessage() {
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-                alert('Not connected. Please refresh and enter your information.');
-                return;
-            }
-            
             const text = messageInput.value.trim();
             if (!text && !imageInput.files[0]) return;
             
@@ -752,6 +509,7 @@ async def get_homepage():
                 const message = {
                     type: 'message',
                     text: text,
+                    sender: 'You',
                     timestamp: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
                 };
                 
@@ -762,15 +520,11 @@ async def get_homepage():
         }
 
         function sendImageMessage(base64Image, filename) {
-            if (!ws || ws.readyState !== WebSocket.OPEN) {
-                alert('Not connected. Please refresh and enter your information.');
-                return;
-            }
-            
             const message = {
                 type: 'image',
                 image: base64Image,
                 text: filename,
+                sender: 'You',
                 timestamp: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
             };
             
@@ -818,11 +572,6 @@ async def get_homepage():
                 document.getElementById('chat-title').textContent = currentChat;
             });
         });
-        
-        // Show modal on page load
-        window.addEventListener('DOMContentLoaded', function() {
-            showUserModal();
-        });
     </script>
 </body>
 </html>
@@ -831,30 +580,11 @@ async def get_homepage():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)  # Initial connection without user info
+    await manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
             message_data = json.loads(data)
-            
-            # Handle user identification
-            if message_data.get('type') == 'user_identify':
-                user_name = message_data.get('user_name')
-                user_id = message_data.get('user_id')
-                # Update user info for this connection
-                if websocket in manager.active_connections:
-                    if user_name:
-                        manager.active_connections[websocket]['name'] = user_name
-                    if user_id:
-                        manager.active_connections[websocket]['id'] = user_id
-                    if user_name or user_id:
-                        manager.active_connections[websocket]['identifier'] = user_name or user_id
-                continue
-            
-            # Get user info for this connection
-            user_info = manager.get_user_info(websocket)
-            message_data['sender'] = message_data.get('sender', user_info['identifier'])
-            message_data['user_id'] = user_info.get('id', '')
             message_data['timestamp'] = message_data.get('timestamp', datetime.now().strftime('%H:%M'))
             
             # Process message through API if it's a new message (not history)
@@ -870,22 +600,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Only process if there's actual content (not empty)
                 if text_to_send or image_base64:
                     # Call API asynchronously (don't block message broadcast)
-                    asyncio.create_task(process_and_save_message(
-                        text_to_send, 
-                        image_base64, 
-                        message_data['timestamp'],
-                        user_info['identifier']
-                    ))
+                    asyncio.create_task(process_and_save_message(text_to_send, image_base64, message_data['timestamp']))
             
             # Broadcast message to all clients
             await manager.broadcast(message_data)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-async def process_and_save_message(text: str, image_base64: Optional[str], timestamp: str, user_identifier: str):
+async def process_and_save_message(text: str, image_base64: Optional[str], timestamp: str):
     """
-    Processes a message using local extractor (and OCR if image) and saves the result.
-    Flow: Image → OCR API → Extract text → Local Extractor → Google Sheets/Excel
+    Processes a message using local extractor (and OCR if image) and saves the result to Excel.
+    Flow: Image → OCR API → Extract text → Local Extractor → Excel
     Runs silently in background - only shows final success/error notification.
     """
     try:
@@ -929,26 +654,21 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
         if result.get('status') == 'success':
             extracted_data = result.get('extracted_data', {})
             
-            # Add user identifier to extracted data
-            extracted_data['user_identifier'] = user_identifier
-            extracted_data['extracted_by'] = user_identifier
-            extracted_data['extraction_timestamp'] = datetime.now().isoformat()
-            
             # Create a filesystem-safe timestamp
             safe_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
-            # Save to Google Sheets or local Excel
-            save_location = save_extracted_data(extracted_data, safe_timestamp)
+            # Save to Excel
+            filepath = save_to_excel(extracted_data, safe_timestamp)
             
             # Log success to console
-            print(f"✓ Successfully processed message and saved to: {save_location}")
+            print(f"✓ Successfully processed message and saved to: {filepath}")
             if ocr_status == "success":
                 print(f"  (Processed via: Image → OCR API → Local Extractor)")
             else:
                 print(f"  (Processed via: Text → Local Extractor)")
             
-            # Only show final success notification
-            success_msg = f"✓ Data extracted and saved: {save_location}"
+            # Only show final success notification to sender
+            success_msg = f"✓ Data extracted and saved to Desktop: {os.path.basename(filepath)}"
             if ocr_status == "success":
                 success_msg += " (from image)"
             
@@ -957,7 +677,7 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                 "text": success_msg,
                 "status": "success",
                 "timestamp": datetime.now().strftime('%H:%M'),
-                "save_location": save_location
+                "filepath": filepath
             }
             await manager.broadcast(notification)
         else:

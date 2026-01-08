@@ -5,4 +5,6 @@ python-multipart
 aiohttp
 pandas
 openpyxl
+gspread
+google-auth
 
