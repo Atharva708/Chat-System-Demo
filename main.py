@@ -64,18 +64,19 @@ manager = ConnectionManager()
 OCR_API_URL = "https://ocr-deploy-lbdg.onrender.com"  # OCR API for images
 
 # Google Sheets Configuration
-# Try to load from credentials.json file first, then environment variables
+# On Render, use environment variables. Locally, try credentials.json first
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "")
 CREDENTIALS_FILE = "credentials.json"
+IS_RENDER = os.getenv("RENDER") is not None
 
-# Try to load credentials from file
-if os.path.exists(CREDENTIALS_FILE):
+# On Render, prioritize environment variables. Locally, try file first
+if not IS_RENDER and os.path.exists(CREDENTIALS_FILE):
     try:
         with open(CREDENTIALS_FILE, 'r') as f:
             creds_dict = json.load(f)
-            # If file contains sheet_id, use it
-            if 'sheet_id' in creds_dict:
+            # If file contains sheet_id, use it (unless env var is set)
+            if 'sheet_id' in creds_dict and not GOOGLE_SHEET_ID:
                 GOOGLE_SHEET_ID = creds_dict['sheet_id']
             print(f"✓ Loaded credentials from {CREDENTIALS_FILE}")
     except Exception as e:
@@ -95,72 +96,112 @@ except:
 google_sheets_client = None
 GOOGLE_SHEETS_INIT_ERROR = None
 
-# Try to load from credentials.json file first
-if os.path.exists(CREDENTIALS_FILE):
-    try:
-        print(f"📁 Found credentials.json at: {os.path.abspath(CREDENTIALS_FILE)}")
-        with open(CREDENTIALS_FILE, 'r') as f:
-            creds_dict = json.load(f)
-        print("✓ Loaded credentials.json successfully")
-        
-        # Get sheet ID from file if present
-        if 'sheet_id' in creds_dict:
-            GOOGLE_SHEET_ID = creds_dict['sheet_id']
-            print(f"✓ Found sheet_id in credentials.json: {GOOGLE_SHEET_ID[:20]}...")
-        elif not GOOGLE_SHEET_ID:
-            print("⚠ No sheet_id found in credentials.json or environment")
-        
-        # Initialize Google Sheets client
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        google_sheets_client = gspread.authorize(creds)
-        print("✓ Google Sheets client authorized")
-        
-        # Verify connection by trying to open the sheet
-        if GOOGLE_SHEET_ID:
-            try:
-                test_sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
-                print(f"✓ Successfully connected to Google Sheet: {test_sheet.title}")
-                print("✓ Google Sheets fully initialized and ready!")
-            except Exception as e:
-                GOOGLE_SHEETS_INIT_ERROR = f"Cannot access Google Sheet: {str(e)}. Make sure the sheet is shared with: {creds_dict.get('client_email', 'service account email')}"
-                print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
-        else:
-            GOOGLE_SHEETS_INIT_ERROR = "GOOGLE_SHEET_ID not configured"
-            print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+# Priority: On Render use env vars, locally try file first then env vars
+if IS_RENDER:
+    print("🌐 Running on Render - using environment variables for credentials")
+    # On Render, must use environment variables
+    if GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID:
+        try:
+            print("📝 Initializing from environment variables...")
+            creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+            scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            google_sheets_client = gspread.authorize(creds)
+            print("✓ Google Sheets client authorized from environment variables")
             
-    except json.JSONDecodeError as e:
-        GOOGLE_SHEETS_INIT_ERROR = f"Invalid JSON in credentials.json: {str(e)}"
+            # Verify connection
+            test_sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
+            print(f"✓ Successfully connected to Google Sheet: {test_sheet.title}")
+            print("✓ Google Sheets fully initialized and ready!")
+        except json.JSONDecodeError as e:
+            GOOGLE_SHEETS_INIT_ERROR = f"Invalid JSON in GOOGLE_SHEETS_CREDENTIALS_JSON: {str(e)}"
+            print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+        except Exception as e:
+            GOOGLE_SHEETS_INIT_ERROR = f"Error initializing from environment variables: {str(e)}"
+            print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+            import traceback
+            traceback.print_exc()
+    else:
+        missing = []
+        if not GOOGLE_CREDENTIALS_JSON:
+            missing.append("GOOGLE_SHEETS_CREDENTIALS_JSON")
+        if not GOOGLE_SHEET_ID:
+            missing.append("GOOGLE_SHEET_ID")
+        GOOGLE_SHEETS_INIT_ERROR = f"Missing environment variables on Render: {', '.join(missing)}"
         print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
-    except Exception as e:
-        GOOGLE_SHEETS_INIT_ERROR = f"Error initializing from credentials.json: {str(e)}"
-        print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
-        import traceback
-        traceback.print_exc()
-
-# Try environment variables as fallback
-if not google_sheets_client and GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID:
-    try:
-        print("📝 Trying to initialize from environment variables...")
-        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        google_sheets_client = gspread.authorize(creds)
-        
-        # Verify connection
-        test_sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
-        print(f"✓ Successfully connected to Google Sheet: {test_sheet.title}")
-        print("✓ Google Sheets initialized successfully from environment variables")
-    except Exception as e:
-        GOOGLE_SHEETS_INIT_ERROR = f"Error initializing from environment variables: {str(e)}"
-        print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
-        google_sheets_client = None
+        print("   Please set these in your Render dashboard: Environment > Add Environment Variable")
+else:
+    # Local development: try file first, then environment variables
+    print("💻 Running locally - trying credentials.json first...")
+    if os.path.exists(CREDENTIALS_FILE):
+        try:
+            print(f"📁 Found credentials.json at: {os.path.abspath(CREDENTIALS_FILE)}")
+            with open(CREDENTIALS_FILE, 'r') as f:
+                creds_dict = json.load(f)
+            print("✓ Loaded credentials.json successfully")
+            
+            # Get sheet ID from file if present (unless env var is set)
+            if 'sheet_id' in creds_dict and not GOOGLE_SHEET_ID:
+                GOOGLE_SHEET_ID = creds_dict['sheet_id']
+                print(f"✓ Found sheet_id in credentials.json: {GOOGLE_SHEET_ID[:20]}...")
+            elif not GOOGLE_SHEET_ID:
+                print("⚠ No sheet_id found in credentials.json or environment")
+            
+            # Initialize Google Sheets client
+            scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            google_sheets_client = gspread.authorize(creds)
+            print("✓ Google Sheets client authorized")
+            
+            # Verify connection by trying to open the sheet
+            if GOOGLE_SHEET_ID:
+                try:
+                    test_sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
+                    print(f"✓ Successfully connected to Google Sheet: {test_sheet.title}")
+                    print("✓ Google Sheets fully initialized and ready!")
+                except Exception as e:
+                    GOOGLE_SHEETS_INIT_ERROR = f"Cannot access Google Sheet: {str(e)}. Make sure the sheet is shared with: {creds_dict.get('client_email', 'service account email')}"
+                    print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+            else:
+                GOOGLE_SHEETS_INIT_ERROR = "GOOGLE_SHEET_ID not configured"
+                print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+                
+        except json.JSONDecodeError as e:
+            GOOGLE_SHEETS_INIT_ERROR = f"Invalid JSON in credentials.json: {str(e)}"
+            print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+        except Exception as e:
+            GOOGLE_SHEETS_INIT_ERROR = f"Error initializing from credentials.json: {str(e)}"
+            print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+            import traceback
+            traceback.print_exc()
+    
+    # Fallback to environment variables if file doesn't exist or failed
+    if not google_sheets_client and GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID:
+        try:
+            print("📝 Trying to initialize from environment variables...")
+            creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+            scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            google_sheets_client = gspread.authorize(creds)
+            
+            # Verify connection
+            test_sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
+            print(f"✓ Successfully connected to Google Sheet: {test_sheet.title}")
+            print("✓ Google Sheets initialized successfully from environment variables")
+        except Exception as e:
+            GOOGLE_SHEETS_INIT_ERROR = f"Error initializing from environment variables: {str(e)}"
+            print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+            google_sheets_client = None
 
 # Final status
 if not google_sheets_client or not GOOGLE_SHEET_ID:
     error_msg = GOOGLE_SHEETS_INIT_ERROR or "Google Sheets not configured"
     print(f"⚠ {error_msg}")
-    print("⚠ System will attempt to use Google Sheets but may fail. Check logs above for details.")
+    if IS_RENDER:
+        print("⚠ On Render, you MUST set these environment variables:")
+        print("   1. GOOGLE_SHEETS_CREDENTIALS_JSON - Your service account JSON (entire content)")
+        print("   2. GOOGLE_SHEET_ID - Your Google Sheet ID (e.g., 1wsIj3UJFlyDUaD0af-XbguRcP20La8uc0C3JP3imTgQ)")
+        print("   Go to: Render Dashboard > Your Service > Environment > Add Environment Variable")
 
 # Define all possible fields from ConversationData (for consistent column headers)
 ALL_FIELDS = [
@@ -423,7 +464,19 @@ def save_extracted_data(extracted_data: Dict, timestamp: str) -> str:
             raise Exception(f"Could not save data locally: {str(e)}")
     else:
         # On Render, we must use Google Sheets
-        raise Exception("Google Sheets is required on Render but not configured. Please check your credentials.json file and ensure the sheet is shared with the service account.")
+        error_details = []
+        if not google_sheets_client:
+            error_details.append("Google Sheets client not initialized")
+        if not GOOGLE_SHEET_ID:
+            error_details.append("GOOGLE_SHEET_ID environment variable not set")
+        if not GOOGLE_CREDENTIALS_JSON:
+            error_details.append("GOOGLE_SHEETS_CREDENTIALS_JSON environment variable not set")
+        
+        error_msg = "Google Sheets is required on Render but not configured."
+        if error_details:
+            error_msg += f" Issues: {', '.join(error_details)}."
+        error_msg += " Please set GOOGLE_SHEET_ID and GOOGLE_SHEETS_CREDENTIALS_JSON environment variables in your Render dashboard. See RENDER_SETUP.md for instructions."
+        raise Exception(error_msg)
 
 @app.get("/test")
 async def test():
