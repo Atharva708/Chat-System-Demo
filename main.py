@@ -226,69 +226,74 @@ ALL_FIELDS = [
 async def extract_text_from_image(image_base64: str) -> Optional[str]:
     """
     Extracts text from base64-encoded image using external OCR API.
+    Sends acknowledgement notifications to users.
     """
+    # Send acknowledgement that OCR API is being called
+    ack_notification = {
+        "type": "notification",
+        "text": "🔄 Calling OCR API to extract text from image...",
+        "status": "info",
+        "timestamp": datetime.now().strftime('%H:%M')
+    }
+    await manager.broadcast(ack_notification)
+    
     try:
         # Clean base64 string (remove data URL prefix if present)
         if ',' in image_base64:
             header, image_base64 = image_base64.split(',', 1)
         
-        print(f"📷 Processing image with External OCR API ({len(image_base64)} base64 chars)...")
+        print(f"📷 Calling OCR API: {OCR_API_URL} ({len(image_base64)} base64 chars)...")
         
-        # Prepare request payload
-        # Try different common API formats
-        payload_json = {
+        # Prepare request payload - try the most common format first
+        payload = {
             "image": image_base64
-        }
-        
-        # Alternative payload formats
-        payload_text = image_base64
-        payload_dict_alt = {
-            "image_base64": image_base64,
-            "base64_image": image_base64,
-            "data": image_base64
         }
         
         # Make async HTTP request to OCR API
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
-                # Try different endpoints and payload formats
-                endpoints_to_try = [
-                    (f"{OCR_API_URL}/ocr", payload_json, "application/json"),
-                    (OCR_API_URL, payload_json, "application/json"),
-                    (f"{OCR_API_URL}/extract", payload_json, "application/json"),
-                    (f"{OCR_API_URL}/ocr", payload_dict_alt, "application/json"),
-                ]
+                # Try /ocr endpoint first (most common)
+                response = await client.post(
+                    f"{OCR_API_URL}/ocr",
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                )
                 
-                response = None
-                last_error = None
+                # If 404, try root endpoint
+                if response.status_code == 404:
+                    print(f"⚠ /ocr endpoint not found, trying root endpoint...")
+                    response = await client.post(
+                        OCR_API_URL,
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
                 
-                for endpoint, payload, content_type in endpoints_to_try:
-                    try:
-                        if content_type == "application/json":
-                            response = await client.post(
-                                endpoint,
-                                json=payload,
-                                headers={"Content-Type": "application/json"}
-                            )
-                        else:
-                            response = await client.post(
-                                endpoint,
-                                data=payload,
-                                headers={"Content-Type": content_type}
-                            )
-                        
-                        # If we get a successful response, break
-                        if response.status_code < 400:
-                            break
-                    except Exception as e:
-                        last_error = e
-                        continue
-                
-                if not response:
-                    raise Exception(f"All endpoint attempts failed. Last error: {last_error}")
+                # If still 404, try /extract
+                if response.status_code == 404:
+                    print(f"⚠ Root endpoint not found, trying /extract...")
+                    response = await client.post(
+                        f"{OCR_API_URL}/extract",
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
                 
                 response.raise_for_status()
-                result = response.json()
+                
+                # Send success acknowledgement
+                success_ack = {
+                    "type": "notification",
+                    "text": "✓ OCR API responded successfully, processing text...",
+                    "status": "info",
+                    "timestamp": datetime.now().strftime('%H:%M')
+                }
+                await manager.broadcast(success_ack)
+                
+                # Parse response
+                try:
+                    result = response.json()
+                except:
+                    # If not JSON, try as plain text
+                    result = response.text
                 
                 # Extract text from response (handle different response formats)
                 extracted_text = None
@@ -298,26 +303,67 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
                         result.get("text") or 
                         result.get("extracted_text") or 
                         result.get("result") or
-                        result.get("data")
+                        result.get("data") or
+                        result.get("ocr_text")
                     )
                 elif isinstance(result, str):
                     extracted_text = result
                 
                 if extracted_text and extracted_text.strip():
-                    print(f"✓ OCR API successful, extracted {len(extracted_text.strip())} characters")
+                    text_length = len(extracted_text.strip())
+                    print(f"✓ OCR API successful, extracted {text_length} characters")
+                    
+                    # Send final success notification
+                    final_ack = {
+                        "type": "notification",
+                        "text": f"✓ OCR completed! Extracted {text_length} characters from image.",
+                        "status": "success",
+                        "timestamp": datetime.now().strftime('%H:%M')
+                    }
+                    await manager.broadcast(final_ack)
+                    
                     return extracted_text.strip()
                 else:
                     print("⚠ OCR API returned empty text")
+                    error_ack = {
+                        "type": "notification",
+                        "text": "⚠ OCR API returned empty text. Please check if image contains readable text.",
+                        "status": "warning",
+                        "timestamp": datetime.now().strftime('%H:%M')
+                    }
+                    await manager.broadcast(error_ack)
                     return None
                     
             except httpx.HTTPStatusError as e:
-                print(f"✗ OCR API HTTP error: {e.response.status_code} - {e.response.text}")
+                error_msg = f"✗ OCR API HTTP error: {e.response.status_code}"
+                if e.response.text:
+                    error_msg += f" - {e.response.text[:100]}"
+                print(error_msg)
+                
+                error_notification = {
+                    "type": "notification",
+                    "text": f"✗ OCR API error: HTTP {e.response.status_code}. Please check API endpoint.",
+                    "status": "error",
+                    "timestamp": datetime.now().strftime('%H:%M')
+                }
+                await manager.broadcast(error_notification)
                 return None
+                
             except httpx.RequestError as e:
-                print(f"✗ OCR API request error: {e}")
+                error_msg = f"✗ OCR API request error: {e}"
+                print(error_msg)
+                
+                error_notification = {
+                    "type": "notification",
+                    "text": f"✗ Cannot connect to OCR API. Please check if {OCR_API_URL} is accessible.",
+                    "status": "error",
+                    "timestamp": datetime.now().strftime('%H:%M')
+                }
+                await manager.broadcast(error_notification)
                 return None
+                
             except json.JSONDecodeError as e:
-                print(f"✗ OCR API response is not valid JSON: {e}")
+                print(f"⚠ OCR API response is not valid JSON, trying as plain text...")
                 # Try to get text from response directly
                 try:
                     text = response.text
@@ -326,12 +372,29 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
                         return text.strip()
                 except:
                     pass
+                
+                error_notification = {
+                    "type": "notification",
+                    "text": "⚠ OCR API returned unexpected format. Please check API response format.",
+                    "status": "warning",
+                    "timestamp": datetime.now().strftime('%H:%M')
+                }
+                await manager.broadcast(error_notification)
                 return None
                 
     except Exception as e:
-        print(f"✗ Error calling OCR API: {str(e)}")
+        error_msg = f"✗ Error calling OCR API: {str(e)}"
+        print(error_msg)
         import traceback
         traceback.print_exc()
+        
+        error_notification = {
+            "type": "notification",
+            "text": f"✗ OCR API error: {str(e)[:100]}",
+            "status": "error",
+            "timestamp": datetime.now().strftime('%H:%M')
+        }
+        await manager.broadcast(error_notification)
         return None
 
 async def process_text_locally(text: str) -> Dict:
@@ -690,6 +753,17 @@ async def download_today_excel():
 
 @app.get("/", response_class=HTMLResponse)
 async def get_homepage():
+    # Read Teams UI HTML from file
+    try:
+        with open("teams_ui.html", "r") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        # Fallback to inline HTML if file not found
+        return HTMLResponse(content="<html><body><h1>Teams UI file not found. Please ensure teams_ui.html exists.</h1></body></html>")
+
+@app.get("/old", response_class=HTMLResponse)
+async def get_old_homepage():
     html_content = """
 <!DOCTYPE html>
 <html lang="en">

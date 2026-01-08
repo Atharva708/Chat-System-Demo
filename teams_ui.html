@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat | Walk Through | Microsoft Teams</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background-color: #1a1a1a;
+            height: 100vh;
+            overflow: hidden;
+            color: #ffffff;
+        }
+        .teams-dark-bg {
+            background-color: #252423;
+        }
+        .teams-darker-bg {
+            background-color: #1a1a1a;
+        }
+        .teams-sidebar-bg {
+            background-color: #2d2c2c;
+        }
+        .teams-purple {
+            color: #6264A7;
+        }
+        .teams-purple-bg {
+            background-color: #6264A7;
+        }
+        .teams-purple-hover:hover {
+            background-color: #6264A7;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #2d2c2c;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #484644;
+            border-radius: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #6264A7;
+        }
+        .nav-icon {
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            cursor: pointer;
+            color: #b3b0ad;
+        }
+        .nav-icon:hover {
+            background-color: #484644;
+        }
+        .nav-icon.active {
+            background-color: #6264A7;
+            color: #ffffff;
+        }
+        .chat-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 4px;
+            margin: 2px 0;
+        }
+        .chat-item:hover {
+            background-color: #484644;
+        }
+        .chat-item.active {
+            background-color: #6264A7;
+        }
+    </style>
+</head>
+<body class="teams-darker-bg">
+    <div class="flex h-screen">
+        <!-- Left Navigation Sidebar -->
+        <div class="w-16 teams-sidebar-bg flex flex-col items-center py-2 border-r border-gray-700">
+            <div class="nav-icon active mb-2" title="Activity">
+                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                </svg>
+            </div>
+            <div class="nav-icon teams-purple-bg mb-2" title="Chat">
+                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/>
+                </svg>
+            </div>
+            <div class="nav-icon mb-2" title="Calendar">
+                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z"/>
+                </svg>
+            </div>
+            <div class="nav-icon mb-2" title="Calls">
+                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
+                </svg>
+            </div>
+            <div class="nav-icon mb-2" title="OneDrive">
+                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                </svg>
+            </div>
+            <div class="nav-icon mb-2" title="Copilot">
+                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                </svg>
+            </div>
+            <div class="nav-icon mb-2" title="Apps">
+                <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zm6-10v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z"/>
+                </svg>
+            </div>
+        </div>
+
+        <!-- Chat List Sidebar -->
+        <div class="w-64 teams-sidebar-bg flex flex-col border-r border-gray-700">
+            <div class="p-3 border-b border-gray-700">
+                <div class="flex items-center justify-between mb-2">
+                    <h2 class="text-base font-semibold text-white">Chat</h2>
+                    <input type="text" placeholder="Search" class="bg-gray-700 text-white text-sm px-2 py-1 rounded w-32" />
+                </div>
+                <div class="flex space-x-1 text-xs">
+                    <button class="px-2 py-1 text-gray-400 hover:text-white">Unread</button>
+                    <button class="px-2 py-1 text-gray-400 hover:text-white">Channels</button>
+                    <button class="px-2 py-1 text-white border-b-2 border-white">Chats</button>
+                    <button class="px-2 py-1 text-gray-400 hover:text-white">Unmuted</button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-y-auto custom-scrollbar">
+                <div class="p-2">
+                    <div class="chat-item" data-chat="Scott Griess">
+                        <div class="text-sm text-white">Scott Griess</div>
+                    </div>
+                    <div class="chat-item" data-chat="Jayalakshmi Inti">
+                        <div class="text-sm text-white">Jayalakshmi Inti</div>
+                    </div>
+                    <div class="chat-item" data-chat="Poonam and Rohit">
+                        <div class="text-sm text-white">Poonam and Rohit</div>
+                    </div>
+                    <div class="chat-item" data-chat="Nishant Mishra">
+                        <div class="text-sm text-white">Nishant Mishra</div>
+                    </div>
+                    <div class="chat-item" data-chat="Fee Scheduling">
+                        <div class="text-sm text-white">Fee Scheduling</div>
+                    </div>
+                    <div class="chat-item" data-chat="Connect">
+                        <div class="text-sm text-white">Connect</div>
+                    </div>
+                    <div class="chat-item" data-chat="Q1 Deployment Slide">
+                        <div class="text-sm text-white">Q1 Deployment Slide</div>
+                    </div>
+                    <div class="chat-item" data-chat="Project Overview">
+                        <div class="text-sm text-white">Project Overview</div>
+                    </div>
+                    <div class="chat-item" data-chat="P3 - Claims">
+                        <div class="text-sm text-white">P3 - Claims</div>
+                    </div>
+                    <div class="chat-item" data-chat="P3 - Workshop">
+                        <div class="text-sm text-white">P3 - Workshop</div>
+                    </div>
+                    <div class="chat-item" data-chat="Daily connect">
+                        <div class="text-sm text-white">Daily connect</div>
+                    </div>
+                    <div class="chat-item" data-chat="Roadmap call">
+                        <div class="text-sm text-white">Roadmap call</div>
+                    </div>
+                    <div class="chat-item" data-chat="Claims - Pre check">
+                        <div class="text-sm text-white">Claims - Pre check</div>
+                    </div>
+                    <div class="chat-item" data-chat="Daily Stand-up">
+                        <div class="text-sm text-white">Daily Stand-up</div>
+                    </div>
+                    <div class="chat-item" data-chat="claims walk - through">
+                        <div class="text-sm text-white">claims walk - through</div>
+                    </div>
+                    <div class="chat-item" data-chat="P3 Discussion">
+                        <div class="text-sm text-white">P3 Discussion</div>
+                    </div>
+                    <div class="chat-item" data-chat="P3 - Walk Through">
+                        <div class="text-sm text-white">P3 - Walk Through</div>
+                    </div>
+                    <div class="chat-item active" data-chat="Walk Through">
+                        <div class="text-sm text-white font-semibold">Walk Through</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="flex-1 flex flex-col teams-dark-bg">
+            <!-- Chat Header -->
+            <div class="p-4 border-b border-gray-700">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h1 class="text-lg font-semibold text-white mb-1" id="chat-title">Walk Through</h1>
+                        <div class="flex items-center space-x-4 text-sm text-gray-400">
+                            <span>Chat</span>
+                            <span>Shared</span>
+                            <span class="text-white border-b-2 border-white pb-1">Recap</span>
+                            <span>Q&A</span>
+                            <span>Meeting Whiteboard</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-4 text-sm">
+                        <div class="flex items-center space-x-1">
+                            <span id="ocr-status-indicator" class="w-2 h-2 rounded-full bg-green-400" title="External OCR API"></span>
+                            <span class="text-gray-400">OCR</span>
+                        </div>
+                        <a href="/download-today-excel" class="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">
+                            📥 Download Excel
+                        </a>
+                    </div>
+                </div>
+                <div class="text-xs text-gray-400 mt-2">17 November 2025 20:30 - 21:30</div>
+            </div>
+
+            <!-- Messages Area -->
+            <div class="flex-1 overflow-y-auto custom-scrollbar p-4" id="messages-container">
+                <div id="messages" class="space-y-4">
+                    <!-- Demo messages -->
+                    <div class="flex items-start space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0">
+                            SG
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex items-center space-x-2 mb-1">
+                                <span class="text-sm font-semibold text-white">Scott Griess</span>
+                                <span class="text-xs text-gray-400">20:35</span>
+                            </div>
+                            <p class="text-gray-300">Welcome to the Walk Through session. Let's review the project status.</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white font-semibold flex-shrink-0">
+                            JM
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex items-center space-x-2 mb-1">
+                                <span class="text-sm font-semibold text-white">Jayalakshmi Inti</span>
+                                <span class="text-xs text-gray-400">20:37</span>
+                            </div>
+                            <p class="text-gray-300">I'll share the updated dashboard in a moment.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="border-t border-gray-700 p-4">
+                <div class="flex items-end space-x-2">
+                    <label class="cursor-pointer p-2 hover:bg-gray-700 rounded-lg transition">
+                        <input type="file" id="image-input" accept="image/*" class="hidden">
+                        <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path>
+                        </svg>
+                    </label>
+                    <div class="flex-1">
+                        <textarea 
+                            id="message-input" 
+                            placeholder="Type a message..." 
+                            class="w-full p-3 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600 resize-none border border-gray-600"
+                            rows="1"
+                            onkeydown="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); }"
+                        ></textarea>
+                    </div>
+                    <button 
+                        id="send-button"
+                        onclick="sendMessage()" 
+                        class="bg-purple-600 text-white px-6 py-3 rounded-lg font-semibold transition hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        Send
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Sidebar -->
+        <div class="w-80 teams-sidebar-bg border-l border-gray-700 flex flex-col">
+            <div class="p-4 border-b border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-base font-semibold text-white">Meeting</h3>
+                    <button class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">Join</button>
+                </div>
+                <div class="flex items-center space-x-2 text-sm text-gray-400">
+                    <span>8</span>
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M16 4c0-1.11.89-2 2-2s2 .89 2 2-.89 2-2 2-2-.89-2-2zm4 18v-6h2.5l-2.54-7.63A1.5 1.5 0 0 0 18.54 8H16.5c-.83 0-1.5.67-1.5 1.5V14h3v4h-2v4h2zm-11.5-9.5c.83 0 1.5-.67 1.5-1.5s-.67-1.5-1.5-1.5S8 10.17 8 11s.67 1.5 1.5 1.5zM5.5 6c1.11 0 2-.89 2-2s-.89-2-2-2-2 .89-2 2 .89 2 2 2zm1.5 16v-7H3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h4c.55 0 1 .45 1 1v7h-1.5v-6h-1v6H7zm14.5 0v-4h-2v4h-1.5v-5h3.5v5H21z"/>
+                    </svg>
+                </div>
+            </div>
+            <div class="p-4 border-b border-gray-700">
+                <h4 class="text-sm font-semibold text-white mb-2">Content</h4>
+                <p class="text-xs text-gray-400">No files were shared.</p>
+            </div>
+            <div class="flex-1 overflow-y-auto custom-scrollbar p-4">
+                <div class="flex space-x-2 mb-4">
+                    <button class="px-3 py-1 text-sm text-white border-b-2 border-white">Notes</button>
+                    <button class="px-3 py-1 text-sm text-gray-400 hover:text-white">Transcript</button>
+                </div>
+                <div class="flex flex-col items-center justify-center h-full text-center">
+                    <div class="mb-4">
+                        <svg class="w-24 h-24 text-gray-600 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                    </div>
+                    <h4 class="text-sm font-semibold text-white mb-2">Add meeting notes for everyone</h4>
+                    <p class="text-xs text-gray-400 mb-4">Anyone can contribute to the notes, anytime.</p>
+                    <button class="bg-purple-600 text-white px-4 py-2 rounded text-sm hover:bg-purple-700">Add notes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // User identification
+        let currentUserName = '';
+        let currentUserId = '';
+        let ws = null;
+        const messagesContainer = document.getElementById('messages');
+        const messageInput = document.getElementById('message-input');
+        const sendButton = document.getElementById('send-button');
+        const imageInput = document.getElementById('image-input');
+        const messagesScrollContainer = document.getElementById('messages-container');
+        
+        // Show user identification modal on page load
+        function showUserModal() {
+            const modal = document.createElement('div');
+            modal.id = 'user-modal';
+            modal.className = 'fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50';
+            modal.innerHTML = `
+                <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4 border border-gray-700">
+                    <h2 class="text-xl font-semibold mb-4 text-white">Enter Your Information</h2>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Your Name *</label>
+                            <input type="text" id="user-name-input" placeholder="e.g., John Doe" 
+                                class="w-full p-2 bg-gray-700 text-white border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600"
+                                onkeydown="if(event.key === 'Enter') connectWebSocket()">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-1">Your ID (Optional)</label>
+                            <input type="text" id="user-id-input" placeholder="e.g., EMP001" 
+                                class="w-full p-2 bg-gray-700 text-white border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600"
+                                onkeydown="if(event.key === 'Enter') connectWebSocket()">
+                        </div>
+                        <button onclick="connectWebSocket()" 
+                            class="w-full bg-purple-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-purple-700">
+                            Join Chat
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+        
+        // Connect WebSocket after user identification
+        function connectWebSocket() {
+            currentUserName = document.getElementById('user-name-input').value.trim();
+            currentUserId = document.getElementById('user-id-input').value.trim();
+            
+            if (!currentUserName && !currentUserId) {
+                alert('Please enter at least your name or ID');
+                return;
+            }
+            
+            // Remove modal
+            const modal = document.getElementById('user-modal');
+            if (modal) modal.remove();
+            
+            // Dynamically detect WebSocket protocol
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            
+            // Setup WebSocket handlers
+            setupWebSocketHandlers();
+        }
+        
+        // Setup WebSocket event handlers
+        function setupWebSocketHandlers() {
+            // Auto-resize textarea
+            messageInput.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = (this.scrollHeight) + 'px';
+            });
+
+            // Handle file/attachment selection
+            imageInput.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    if (file.type.startsWith('image/')) {
+                        console.log(`📎 Image file selected: ${file.name}`);
+                        const reader = new FileReader();
+                        reader.onload = function(event) {
+                            const base64Image = event.target.result;
+                            sendImageMessage(base64Image, file.name);
+                        };
+                        reader.readAsDataURL(file);
+                    } else {
+                        alert('Currently only image files are supported for OCR.');
+                    }
+                    e.target.value = '';
+                }
+            });
+
+            // WebSocket event handlers
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                sendButton.disabled = false;
+                ws.send(JSON.stringify({
+                    type: 'user_identify',
+                    user_name: currentUserName,
+                    user_id: currentUserId
+                }));
+            };
+
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'history') {
+                    messagesContainer.innerHTML = '';
+                    data.messages.forEach(msg => {
+                        addMessageToUI(msg);
+                    });
+                    scrollToBottom();
+                } else if (data.type === 'message' || data.type === 'image') {
+                    addMessageToUI(data);
+                    scrollToBottom();
+                } else if (data.type === 'notification') {
+                    addNotificationToUI(data);
+                    scrollToBottom();
+                }
+            };
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                sendButton.disabled = true;
+                setTimeout(() => {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+                    setupWebSocketHandlers();
+                }, 3000);
+            };
+        }
+
+        function addMessageToUI(data) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'flex items-start space-x-3';
+            
+            const avatar = document.createElement('div');
+            avatar.className = 'w-8 h-8 rounded-full bg-purple-600 flex items-center justify-center text-white font-semibold flex-shrink-0';
+            avatar.textContent = data.sender ? data.sender.substring(0, 2).toUpperCase() : 'U';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'flex-1';
+            
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'flex items-center space-x-2 mb-1';
+            
+            const senderName = document.createElement('span');
+            senderName.className = 'text-sm font-semibold text-white';
+            senderName.textContent = data.sender || 'Anonymous';
+            
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'text-xs text-gray-400';
+            timeSpan.textContent = data.timestamp || '';
+            
+            headerDiv.appendChild(senderName);
+            headerDiv.appendChild(timeSpan);
+            contentDiv.appendChild(headerDiv);
+            
+            if (data.type === 'image' && data.image) {
+                const img = document.createElement('img');
+                img.src = data.image;
+                img.className = 'max-w-md rounded-lg shadow-md cursor-pointer mt-2';
+                img.onclick = function() {
+                    window.open(this.src, '_blank');
+                };
+                contentDiv.appendChild(img);
+                if (data.text) {
+                    const textP = document.createElement('p');
+                    textP.className = 'text-gray-300 mt-2';
+                    textP.textContent = data.text;
+                    contentDiv.appendChild(textP);
+                }
+            } else {
+                const textP = document.createElement('p');
+                textP.className = 'text-gray-300';
+                textP.textContent = data.text || '';
+                contentDiv.appendChild(textP);
+            }
+            
+            messageDiv.appendChild(avatar);
+            messageDiv.appendChild(contentDiv);
+            messagesContainer.appendChild(messageDiv);
+        }
+
+        function sendMessage() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Not connected. Please refresh and enter your information.');
+                return;
+            }
+            
+            const text = messageInput.value.trim();
+            if (!text && !imageInput.files[0]) return;
+            
+            if (text) {
+                const message = {
+                    type: 'message',
+                    text: text,
+                    timestamp: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+                };
+                
+                ws.send(JSON.stringify(message));
+                messageInput.value = '';
+                messageInput.style.height = 'auto';
+            }
+        }
+
+        function sendImageMessage(base64Image, filename) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Not connected. Please refresh and enter your information.');
+                return;
+            }
+            
+            console.log(`📎 Sending image: ${filename} - OCR will be triggered automatically`);
+            const message = {
+                type: 'image',
+                image: base64Image,
+                text: filename,
+                timestamp: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+            };
+            
+            ws.send(JSON.stringify(message));
+        }
+
+        function addNotificationToUI(data) {
+            const notificationDiv = document.createElement('div');
+            notificationDiv.className = 'flex items-center justify-center my-2';
+            
+            const notificationContent = document.createElement('div');
+            
+            const status = data.status || 'success';
+            let bgColor, textColor;
+            
+            if (status === 'success' || status === 'info') {
+                bgColor = 'bg-green-900';
+                textColor = 'text-green-300';
+            } else if (status === 'warning') {
+                bgColor = 'bg-yellow-900';
+                textColor = 'text-yellow-300';
+            } else {
+                bgColor = 'bg-red-900';
+                textColor = 'text-red-300';
+            }
+            
+            notificationContent.className = `${bgColor} ${textColor} px-4 py-2 rounded-lg text-sm border border-gray-700`;
+            notificationContent.textContent = data.text || 'Completed';
+            
+            notificationDiv.appendChild(notificationContent);
+            messagesContainer.appendChild(notificationDiv);
+        }
+
+        function scrollToBottom() {
+            messagesScrollContainer.scrollTop = messagesScrollContainer.scrollHeight;
+        }
+
+        // Chat selection
+        document.querySelectorAll('.chat-item').forEach(item => {
+            item.addEventListener('click', function() {
+                document.querySelectorAll('.chat-item').forEach(i => i.classList.remove('active'));
+                this.classList.add('active');
+                const chatName = this.dataset.chat;
+                document.getElementById('chat-title').textContent = chatName;
+            });
+        });
+        
+        // Show modal on page load
+        window.addEventListener('DOMContentLoaded', function() {
+            showUserModal();
+        });
+    </script>
+</body>
+</html>
+
