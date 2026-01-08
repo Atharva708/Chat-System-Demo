@@ -19,6 +19,8 @@ import httpx
 import pypdfium2 as pdfium
 from PIL import Image, ImageOps, ImageFilter
 from docx import Document
+import re
+
 
 app = FastAPI()
 
