@@ -93,44 +93,74 @@ except:
 
 # Initialize Google Sheets client if credentials are available
 google_sheets_client = None
+GOOGLE_SHEETS_INIT_ERROR = None
+
+# Try to load from credentials.json file first
 if os.path.exists(CREDENTIALS_FILE):
     try:
+        print(f"📁 Found credentials.json at: {os.path.abspath(CREDENTIALS_FILE)}")
         with open(CREDENTIALS_FILE, 'r') as f:
             creds_dict = json.load(f)
+        print("✓ Loaded credentials.json successfully")
+        
+        # Get sheet ID from file if present
+        if 'sheet_id' in creds_dict:
+            GOOGLE_SHEET_ID = creds_dict['sheet_id']
+            print(f"✓ Found sheet_id in credentials.json: {GOOGLE_SHEET_ID[:20]}...")
+        elif not GOOGLE_SHEET_ID:
+            print("⚠ No sheet_id found in credentials.json or environment")
+        
+        # Initialize Google Sheets client
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         google_sheets_client = gspread.authorize(creds)
-        # Get sheet ID from file or environment
-        if not GOOGLE_SHEET_ID and 'sheet_id' in creds_dict:
-            GOOGLE_SHEET_ID = creds_dict['sheet_id']
-        print("✓ Google Sheets initialized successfully from credentials.json")
-    except Exception as e:
-        print(f"⚠ Google Sheets initialization from file failed: {e}")
-        # Try environment variable as fallback
-        if GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID:
+        print("✓ Google Sheets client authorized")
+        
+        # Verify connection by trying to open the sheet
+        if GOOGLE_SHEET_ID:
             try:
-                creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-                scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-                creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-                google_sheets_client = gspread.authorize(creds)
-                print("✓ Google Sheets initialized successfully from environment variables")
-            except Exception as e2:
-                print(f"⚠ Google Sheets initialization from env failed: {e2}")
-                google_sheets_client = None
+                test_sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
+                print(f"✓ Successfully connected to Google Sheet: {test_sheet.title}")
+                print("✓ Google Sheets fully initialized and ready!")
+            except Exception as e:
+                GOOGLE_SHEETS_INIT_ERROR = f"Cannot access Google Sheet: {str(e)}. Make sure the sheet is shared with: {creds_dict.get('client_email', 'service account email')}"
+                print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
         else:
-            google_sheets_client = None
-elif GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID:
+            GOOGLE_SHEETS_INIT_ERROR = "GOOGLE_SHEET_ID not configured"
+            print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+            
+    except json.JSONDecodeError as e:
+        GOOGLE_SHEETS_INIT_ERROR = f"Invalid JSON in credentials.json: {str(e)}"
+        print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+    except Exception as e:
+        GOOGLE_SHEETS_INIT_ERROR = f"Error initializing from credentials.json: {str(e)}"
+        print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
+        import traceback
+        traceback.print_exc()
+
+# Try environment variables as fallback
+if not google_sheets_client and GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID:
     try:
+        print("📝 Trying to initialize from environment variables...")
         creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         google_sheets_client = gspread.authorize(creds)
+        
+        # Verify connection
+        test_sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
+        print(f"✓ Successfully connected to Google Sheet: {test_sheet.title}")
         print("✓ Google Sheets initialized successfully from environment variables")
     except Exception as e:
-        print(f"⚠ Google Sheets initialization failed: {e}")
+        GOOGLE_SHEETS_INIT_ERROR = f"Error initializing from environment variables: {str(e)}"
+        print(f"✗ {GOOGLE_SHEETS_INIT_ERROR}")
         google_sheets_client = None
-else:
-    print("⚠ Google Sheets not configured - will use local file saving (may not work on Render)")
+
+# Final status
+if not google_sheets_client or not GOOGLE_SHEET_ID:
+    error_msg = GOOGLE_SHEETS_INIT_ERROR or "Google Sheets not configured"
+    print(f"⚠ {error_msg}")
+    print("⚠ System will attempt to use Google Sheets but may fail. Check logs above for details.")
 
 # Define all possible fields from ConversationData (for consistent column headers)
 ALL_FIELDS = [
@@ -232,15 +262,17 @@ def save_to_google_sheets(extracted_data: Dict, timestamp: str) -> str:
     Uses consistent column headers for all rows.
     Returns a success message with sheet name.
     """
+    if not google_sheets_client:
+        raise Exception("Google Sheets client not initialized. Check credentials.json and ensure the service account has access.")
+    
+    if not GOOGLE_SHEET_ID:
+        raise Exception("GOOGLE_SHEET_ID not configured. Add 'sheet_id' to credentials.json or set GOOGLE_SHEET_ID environment variable.")
+    
     try:
-        if not google_sheets_client:
-            raise Exception("Google Sheets client not initialized")
-        
-        if not GOOGLE_SHEET_ID:
-            raise Exception("GOOGLE_SHEET_ID not configured")
-        
         # Open the spreadsheet
+        print(f"📊 Opening Google Sheet with ID: {GOOGLE_SHEET_ID[:20]}...")
         sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
+        print(f"✓ Opened sheet: {sheet.title}")
         
         # Get today's date for worksheet name
         today = datetime.now().strftime("%Y-%m-%d")
@@ -248,21 +280,32 @@ def save_to_google_sheets(extracted_data: Dict, timestamp: str) -> str:
         
         # Try to get existing worksheet or create new one
         worksheet_exists = True
+        worksheet = None
         try:
             worksheet = sheet.worksheet(worksheet_name)
+            print(f"✓ Found existing worksheet: {worksheet_name}")
             # Check if headers exist
             existing_headers = worksheet.row_values(1)
             if not existing_headers or len(existing_headers) == 0:
+                print("⚠ Worksheet exists but has no headers, adding headers...")
                 worksheet_exists = False
-        except:
+            elif existing_headers != ALL_FIELDS:
+                print(f"⚠ Headers don't match expected fields. Expected {len(ALL_FIELDS)} fields, found {len(existing_headers)}")
+                # Headers exist but might be different - we'll still append data
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet_exists = False
+            print(f"📝 Worksheet '{worksheet_name}' not found, will create new one")
+        except Exception as e:
+            print(f"⚠ Error checking worksheet: {e}, will create new one")
             worksheet_exists = False
         
-        if not worksheet_exists:
+        if not worksheet_exists or worksheet is None:
             # Create new worksheet with enough columns
+            print(f"📝 Creating new worksheet: {worksheet_name} with {len(ALL_FIELDS)} columns")
             worksheet = sheet.add_worksheet(title=worksheet_name, rows=1000, cols=len(ALL_FIELDS))
             # Add header row with ALL fields in consistent order
             worksheet.append_row(ALL_FIELDS)
-            print(f"✓ Created new worksheet: {worksheet_name} with {len(ALL_FIELDS)} columns")
+            print(f"✓ Created worksheet with headers: {', '.join(ALL_FIELDS[:5])}... ({len(ALL_FIELDS)} total)")
         
         # Ensure all fields are present in extracted_data (fill missing ones with empty string)
         complete_data = {}
@@ -273,18 +316,29 @@ def save_to_google_sheets(extracted_data: Dict, timestamp: str) -> str:
         row_values = [complete_data.get(field, '') for field in ALL_FIELDS]
         
         # Append data row
+        print(f"💾 Appending data row to worksheet...")
         worksheet.append_row(row_values)
         
-        print(f"✓ Saved data to Google Sheet: {worksheet_name}")
-        print(f"  Fields saved: {len([v for v in row_values if v])} non-empty fields")
+        non_empty_count = len([v for v in row_values if v])
+        print(f"✓ Successfully saved to Google Sheet!")
+        print(f"  Sheet: {sheet.title}")
+        print(f"  Worksheet: {worksheet_name}")
+        print(f"  Fields with data: {non_empty_count}/{len(ALL_FIELDS)}")
         
-        return f"Google Sheet: {worksheet_name}"
+        return f"Google Sheet: {sheet.title} > {worksheet_name}"
         
+    except gspread.exceptions.APIError as e:
+        error_msg = f"Google Sheets API error: {str(e)}"
+        if "PERMISSION_DENIED" in str(e) or "permission" in str(e).lower():
+            error_msg += f"\nMake sure the sheet is shared with the service account email from credentials.json"
+        print(f"✗ {error_msg}")
+        raise Exception(error_msg)
     except Exception as e:
-        print(f"Error saving to Google Sheets: {str(e)}")
+        error_msg = f"Error saving to Google Sheets: {str(e)}"
+        print(f"✗ {error_msg}")
         import traceback
         traceback.print_exc()
-        raise
+        raise Exception(error_msg)
 
 def save_to_excel_local(extracted_data: Dict, timestamp: str) -> str:
     """
@@ -341,26 +395,85 @@ def save_to_excel_local(extracted_data: Dict, timestamp: str) -> str:
 
 def save_extracted_data(extracted_data: Dict, timestamp: str) -> str:
     """
-    Saves extracted data to Google Sheets if available, otherwise falls back to local Excel.
+    Saves extracted data to Google Sheets. On Render, this is the only option.
     Returns a description of where data was saved.
     """
-    # Try Google Sheets first
+    # Always try Google Sheets first (required on Render)
     if google_sheets_client and GOOGLE_SHEET_ID:
         try:
-            return save_to_google_sheets(extracted_data, timestamp)
+            result = save_to_google_sheets(extracted_data, timestamp)
+            return result
         except Exception as e:
-            print(f"Google Sheets save failed, trying local: {e}")
+            error_msg = f"Google Sheets save failed: {str(e)}"
+            print(f"✗ {error_msg}")
+            import traceback
+            traceback.print_exc()
+            # On Render, we can't save locally, so raise the error
+            if os.getenv("RENDER"):
+                raise Exception(f"Cannot save data on Render. {error_msg}")
+            # Only fallback to local if not on Render
+            print("⚠ Falling back to local Excel save (not available on Render)")
     
-    # Fallback to local Excel
-    try:
-        return save_to_excel_local(extracted_data, timestamp)
-    except Exception as e:
-        print(f"Local save also failed: {e}")
-        return "Error: Could not save data"
+    # Fallback to local Excel (only works locally, not on Render)
+    if not os.getenv("RENDER"):
+        try:
+            return save_to_excel_local(extracted_data, timestamp)
+        except Exception as e:
+            print(f"✗ Local save also failed: {e}")
+            raise Exception(f"Could not save data locally: {str(e)}")
+    else:
+        # On Render, we must use Google Sheets
+        raise Exception("Google Sheets is required on Render but not configured. Please check your credentials.json file and ensure the sheet is shared with the service account.")
 
 @app.get("/test")
 async def test():
     return {"status": "Server is running!"}
+
+@app.get("/test-sheets")
+async def test_sheets():
+    """Test endpoint to verify Google Sheets connection"""
+    try:
+        if not google_sheets_client:
+            return {
+                "status": "error",
+                "message": "Google Sheets client not initialized",
+                "details": "Check credentials.json file and ensure it's properly configured"
+            }
+        
+        if not GOOGLE_SHEET_ID:
+            return {
+                "status": "error",
+                "message": "GOOGLE_SHEET_ID not configured",
+                "details": "Add 'sheet_id' to credentials.json or set GOOGLE_SHEET_ID environment variable"
+            }
+        
+        # Try to open the sheet
+        sheet = google_sheets_client.open_by_key(GOOGLE_SHEET_ID)
+        
+        # Get worksheet list
+        worksheets = [ws.title for ws in sheet.worksheets()]
+        
+        return {
+            "status": "success",
+            "message": "Google Sheets connection successful!",
+            "sheet_title": sheet.title,
+            "sheet_id": GOOGLE_SHEET_ID,
+            "worksheets": worksheets,
+            "total_worksheets": len(worksheets)
+        }
+    except gspread.exceptions.APIError as e:
+        return {
+            "status": "error",
+            "message": "Google Sheets API error",
+            "details": str(e),
+            "hint": "Make sure the sheet is shared with the service account email from credentials.json"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": "Error connecting to Google Sheets",
+            "details": str(e)
+        }
 
 @app.get("/", response_class=HTMLResponse)
 async def get_homepage():
@@ -938,28 +1051,48 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
             safe_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
             # Save to Google Sheets or local Excel
-            save_location = save_extracted_data(extracted_data, safe_timestamp)
-            
-            # Log success to console
-            print(f"✓ Successfully processed message and saved to: {save_location}")
-            if ocr_status == "success":
-                print(f"  (Processed via: Image → OCR API → Local Extractor)")
-            else:
-                print(f"  (Processed via: Text → Local Extractor)")
-            
-            # Only show final success notification
-            success_msg = f"✓ Data extracted and saved: {save_location}"
-            if ocr_status == "success":
-                success_msg += " (from image)"
-            
-            notification = {
-                "type": "notification",
-                "text": success_msg,
-                "status": "success",
-                "timestamp": datetime.now().strftime('%H:%M'),
-                "save_location": save_location
-            }
-            await manager.broadcast(notification)
+            try:
+                save_location = save_extracted_data(extracted_data, safe_timestamp)
+                
+                # Log success to console
+                print(f"✓ Successfully processed message and saved to: {save_location}")
+                if ocr_status == "success":
+                    print(f"  (Processed via: Image → OCR API → Local Extractor)")
+                else:
+                    print(f"  (Processed via: Text → Local Extractor)")
+                
+                # Only show final success notification
+                success_msg = f"✓ Data extracted and saved to Google Sheets: {save_location}"
+                if ocr_status == "success":
+                    success_msg += " (from image)"
+                
+                notification = {
+                    "type": "notification",
+                    "text": success_msg,
+                    "status": "success",
+                    "timestamp": datetime.now().strftime('%H:%M'),
+                    "save_location": save_location
+                }
+                await manager.broadcast(notification)
+            except Exception as save_error:
+                error_msg = str(save_error)
+                print(f"✗ Failed to save data: {error_msg}")
+                
+                # Provide helpful error message
+                if "Google Sheets" in error_msg or "credentials" in error_msg.lower():
+                    user_error_msg = f"✗ Failed to save to Google Sheets. Check server logs. Error: {error_msg[:100]}"
+                else:
+                    user_error_msg = f"✗ Failed to save data: {error_msg[:100]}"
+                
+                error_notification = {
+                    "type": "notification",
+                    "text": user_error_msg,
+                    "status": "error",
+                    "timestamp": datetime.now().strftime('%H:%M')
+                }
+                await manager.broadcast(error_notification)
+                # Re-raise to log full error
+                raise
         else:
             error_msg = result.get('message', 'Unknown error')
             print(f"✗ Extraction failed: {error_msg}")
