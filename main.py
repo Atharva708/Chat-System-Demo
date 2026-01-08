@@ -542,8 +542,6 @@ def save_extracted_data(extracted_data: Dict, timestamp: str) -> Dict:
         return {
             "status": "excel_fallback",
             "message": f"Data saved to daily Excel file. Download at end of day.",
-            "download_url": download_url,
-            "filename": filename,
             "date": date_str
         }
     except Exception as e:
@@ -1081,25 +1079,8 @@ async def get_homepage():
                 textColor = 'text-red-700';
             }
             
-            notificationContent.className = `${bgColor} border ${borderColor} ${textColor} px-4 py-2 rounded-lg text-sm flex items-center gap-2`;
-            
-            // Add text
-            const textSpan = document.createElement('span');
-            textSpan.textContent = data.text || 'Completed';
-            notificationContent.appendChild(textSpan);
-            
-            // Add download button if Excel fallback
-            if (status === 'excel_fallback' && data.download_url) {
-                const downloadBtn = document.createElement('a');
-                downloadBtn.href = data.download_url;
-                downloadBtn.download = data.filename || 'extracted_data.xlsx';
-                downloadBtn.className = 'ml-2 px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-xs font-semibold cursor-pointer';
-                downloadBtn.textContent = '📥 Download Excel';
-                downloadBtn.onclick = function(e) {
-                    e.stopPropagation();
-                };
-                notificationContent.appendChild(downloadBtn);
-            }
+            notificationContent.className = `${bgColor} border ${borderColor} ${textColor} px-4 py-2 rounded-lg text-sm`;
+            notificationContent.textContent = data.text || 'Completed';
             
             notificationDiv.appendChild(notificationContent);
             messagesContainer.appendChild(notificationDiv);
@@ -1265,10 +1246,8 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                     }
                 elif save_result.get("status") == "excel_fallback":
                     # Appended to daily Excel file
-                    download_url = save_result.get('download_url')
-                    filename = save_result.get('filename', 'extracted_data.xlsx')
                     date_str = save_result.get('date', datetime.now().strftime("%Y-%m-%d"))
-                    success_msg = f"✓ Data saved to daily Excel file ({date_str}). Download at end of day."
+                    success_msg = f"✓ Data saved to daily Excel file ({date_str}). Use download button in header to get all data at end of day."
                     if ocr_status == "success":
                         success_msg += " (from image)"
                     
@@ -1276,10 +1255,7 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
                         "type": "notification",
                         "text": success_msg,
                         "status": "excel_fallback",
-                        "timestamp": datetime.now().strftime('%H:%M'),
-                        "download_url": download_url,
-                        "filename": filename,
-                        "date": date_str
+                        "timestamp": datetime.now().strftime('%H:%M')
                     }
                 else:
                     # Unknown status
