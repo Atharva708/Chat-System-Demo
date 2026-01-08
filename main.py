@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from typing import List, Dict, Optional
 import json
 import base64
+import re
 from datetime import datetime
 import asyncio
 import pandas as pd
@@ -19,7 +20,6 @@ import httpx
 import pypdfium2 as pdfium
 from PIL import Image, ImageOps, ImageFilter
 from docx import Document
-import re #import regex
 
 app = FastAPI()
 
