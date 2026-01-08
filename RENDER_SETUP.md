@@ -40,13 +40,43 @@ You already have `credentials.json` locally. You need to:
 4. Add that email with **Editor** permissions
 5. Click **Send**
 
-## Step 4: Redeploy
+## Step 4: Install Tesseract OCR (Required for Image Processing)
 
-After setting environment variables:
+### Option A: Using Build Command (Recommended)
+
+1. Go to your Render service **Settings**
+2. Find **Build Command** field
+3. Set it to (NO sudo - Render runs as root):
+```bash
+apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-eng && pip install -r requirements.txt
+```
+
+4. Find **Start Command** and set it to:
+```bash
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+### Option B: Using Build Script
+
+1. The `build.sh` script is already in your repo
+2. In Render **Settings**, set **Build Command** to:
+```bash
+chmod +x build.sh && ./build.sh
+```
+
+### Option C: Using Dockerfile
+
+1. The `Dockerfile` is already in your repo
+2. In Render **Settings**, change **Environment** to **Docker**
+3. Render will automatically use the Dockerfile
+
+## Step 5: Redeploy
+
+After setting environment variables and build command:
 1. Render will automatically redeploy, OR
 2. Go to **Manual Deploy** > **Deploy latest commit**
 
-## Step 5: Test
+## Step 6: Test
 
 1. Check server logs - you should see:
    ```
