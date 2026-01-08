@@ -223,9 +223,10 @@ ALL_FIELDS = [
     'change_request', 'raw_text', 'user_identifier', 'extracted_by', 'extraction_timestamp'
 ]
 
-async def extract_text_from_image(image_base64: str) -> Optional[str]:
+async def extract_text_from_image(image_base64: str, filename: str = "image.png") -> Optional[str]:
     """
     Extracts text from base64-encoded image using external OCR API.
+    Uses multipart/form-data file upload format as expected by the OCR API.
     Sends acknowledgement notifications to users.
     """
     # Send acknowledgement that OCR API is being called
@@ -242,40 +243,53 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
         if ',' in image_base64:
             header, image_base64 = image_base64.split(',', 1)
         
-        print(f"📷 Calling OCR API: {OCR_API_URL} ({len(image_base64)} base64 chars)...")
+        # Decode base64 to bytes
+        try:
+            image_bytes = base64.b64decode(image_base64)
+            print(f"📷 Calling OCR API: {OCR_API_URL}/ocr/extract ({len(image_bytes)} bytes, filename: {filename})...")
+        except Exception as e:
+            print(f"✗ Failed to decode base64 image: {e}")
+            error_notification = {
+                "type": "notification",
+                "text": "✗ Failed to process image. Invalid image format.",
+                "status": "error",
+                "timestamp": datetime.now().strftime('%H:%M')
+            }
+            await manager.broadcast(error_notification)
+            return None
         
-        # Prepare request payload - try the most common format first
-        payload = {
-            "image": image_base64
-        }
+        # Detect MIME type from filename extension
+        mime_type = "image/png"  # default
+        if filename.lower().endswith(('.jpg', '.jpeg')):
+            mime_type = "image/jpeg"
+        elif filename.lower().endswith('.png'):
+            mime_type = "image/png"
+        elif filename.lower().endswith('.gif'):
+            mime_type = "image/gif"
+        elif filename.lower().endswith('.webp'):
+            mime_type = "image/webp"
         
-        # Make async HTTP request to OCR API
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # Make async HTTP request to OCR API using multipart/form-data
+        async with httpx.AsyncClient(timeout=60.0) as client:
             try:
-                # Try /ocr endpoint first (most common)
+                # Prepare multipart form data
+                # Format: (filename, file_bytes, content_type)
+                files = {
+                    "file": (filename, image_bytes, mime_type)
+                }
+                data = {
+                    "document_type": "generic"
+                }
+                
+                print(f"📤 Sending to OCR API: {OCR_API_URL}/ocr/extract")
+                print(f"   File: {filename}, Size: {len(image_bytes)} bytes, Type: {mime_type}")
+                
+                # Call the OCR API endpoint
                 response = await client.post(
-                    f"{OCR_API_URL}/ocr",
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
+                    f"{OCR_API_URL}/ocr/extract",
+                    files=files,
+                    data=data
                 )
-                
-                # If 404, try root endpoint
-                if response.status_code == 404:
-                    print(f"⚠ /ocr endpoint not found, trying root endpoint...")
-                    response = await client.post(
-                        OCR_API_URL,
-                        json=payload,
-                        headers={"Content-Type": "application/json"}
-                    )
-                
-                # If still 404, try /extract
-                if response.status_code == 404:
-                    print(f"⚠ Root endpoint not found, trying /extract...")
-                    response = await client.post(
-                        f"{OCR_API_URL}/extract",
-                        json=payload,
-                        headers={"Content-Type": "application/json"}
-                    )
                 
                 response.raise_for_status()
                 
@@ -291,20 +305,24 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
                 # Parse response
                 try:
                     result = response.json()
-                except:
+                    print(f"📄 OCR API response: {result}")
+                except json.JSONDecodeError:
                     # If not JSON, try as plain text
-                    result = response.text
+                    result = {"text": response.text}
+                    print(f"📄 OCR API returned plain text: {result}")
                 
-                # Extract text from response (handle different response formats)
+                # Extract text from response
+                # Based on OCRResponse schema, the response should have a "text" field
                 extracted_text = None
                 if isinstance(result, dict):
-                    # Try common response field names
+                    # Try different possible field names
                     extracted_text = (
                         result.get("text") or 
                         result.get("extracted_text") or 
                         result.get("result") or
                         result.get("data") or
-                        result.get("ocr_text")
+                        result.get("ocr_text") or
+                        result.get("content")
                     )
                 elif isinstance(result, str):
                     extracted_text = result
@@ -325,6 +343,7 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
                     return extracted_text.strip()
                 else:
                     print("⚠ OCR API returned empty text")
+                    print(f"   Full response: {result}")
                     error_ack = {
                         "type": "notification",
                         "text": "⚠ OCR API returned empty text. Please check if image contains readable text.",
@@ -336,13 +355,18 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
                     
             except httpx.HTTPStatusError as e:
                 error_msg = f"✗ OCR API HTTP error: {e.response.status_code}"
-                if e.response.text:
-                    error_msg += f" - {e.response.text[:100]}"
+                response_text = ""
+                try:
+                    response_text = e.response.text[:200]
+                    print(f"   Response: {response_text}")
+                except:
+                    pass
+                
                 print(error_msg)
                 
                 error_notification = {
                     "type": "notification",
-                    "text": f"✗ OCR API error: HTTP {e.response.status_code}. Please check API endpoint.",
+                    "text": f"✗ OCR API error: HTTP {e.response.status_code}. {response_text[:50] if response_text else 'Please check API endpoint.'}",
                     "status": "error",
                     "timestamp": datetime.now().strftime('%H:%M')
                 }
@@ -357,26 +381,6 @@ async def extract_text_from_image(image_base64: str) -> Optional[str]:
                     "type": "notification",
                     "text": f"✗ Cannot connect to OCR API. Please check if {OCR_API_URL} is accessible.",
                     "status": "error",
-                    "timestamp": datetime.now().strftime('%H:%M')
-                }
-                await manager.broadcast(error_notification)
-                return None
-                
-            except json.JSONDecodeError as e:
-                print(f"⚠ OCR API response is not valid JSON, trying as plain text...")
-                # Try to get text from response directly
-                try:
-                    text = response.text
-                    if text and text.strip():
-                        print(f"✓ OCR API returned text (non-JSON), extracted {len(text.strip())} characters")
-                        return text.strip()
-                except:
-                    pass
-                
-                error_notification = {
-                    "type": "notification",
-                    "text": "⚠ OCR API returned unexpected format. Please check API response format.",
-                    "status": "warning",
                     "timestamp": datetime.now().strftime('%H:%M')
                 }
                 await manager.broadcast(error_notification)
@@ -1272,13 +1276,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 # ALWAYS process if there's an image/attachment - trigger OCR automatically
                 # Also process if there's text
                 if image_base64 or text_to_send:
+                    # Get filename for image messages (sent as text field)
+                    image_filename = text if message_data.get('type') == 'image' else "image.png"
                     # Call API asynchronously (don't block message broadcast)
                     # OCR will be triggered automatically for any image
                     asyncio.create_task(process_and_save_message(
                         text_to_send, 
                         image_base64, 
                         message_data['timestamp'],
-                        user_info['identifier']
+                        user_info['identifier'],
+                        image_filename
                     ))
             
             # Broadcast message to all clients
@@ -1286,10 +1293,10 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-async def process_and_save_message(text: str, image_base64: Optional[str], timestamp: str, user_identifier: str):
+async def process_and_save_message(text: str, image_base64: Optional[str], timestamp: str, user_identifier: str, image_filename: str = "image.png"):
     """
     Processes a message using local extractor (and OCR if image) and saves the result.
-    Flow: Image → Local OCR → Extract text → Local Extractor → Google Sheets/Excel
+    Flow: Image → External OCR API → Extract text → Local Extractor → Google Sheets/Excel
     Runs silently in background - only shows final success/error notification.
     """
     try:
@@ -1299,8 +1306,8 @@ async def process_and_save_message(text: str, image_base64: Optional[str], times
         # Step 1: ALWAYS trigger OCR for any image/attachment received
         # OCR is automatically triggered whenever an image/attachment is detected
         if image_base64:
-            print("📷 Image/attachment detected - automatically triggering OCR...")
-            ocr_text = await extract_text_from_image(image_base64)
+            print(f"📷 Image/attachment detected ({image_filename}) - automatically triggering OCR...")
+            ocr_text = await extract_text_from_image(image_base64, image_filename)
             # Accept any non-empty text, even if very short
             if ocr_text and ocr_text.strip() and len(ocr_text.strip()) > 0:
                 final_text = ocr_text.strip()
